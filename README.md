@@ -1,0 +1,46 @@
+# dogtools
+things i personally wished were in pwntools but aren't
+code is a mix of GPT slop and my own stuff
+
+## misc
+random stuff. worth reading yourself.
+
+## io_file
+advanced file stream generator, useful for quick FSOP
+stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/pwncli/utils/io_file.py) with a few personal additions at the bottom
+
+## heap
+stuff relevant for heap exploitation. currently:
+- ptr mangling / demangling
+- fake tcache struct crafter
+
+## fmt
+failed attempt at additional format string utilities
+
+## ezrop
+stuff to make ropping faster
+only notable function right now is `quickrop` which sets up a system('/bin/sh') chain
+
+## extelf
+pretty useful gpt-slopped extension to pwntools `ELF`
+if the elf has debug symbols, lets you:
+- get the address of specific fields in a symbol
+    - ^ but casted at a specific address
+- craft your own fake `struct`s to use in payloads
+```python
+libc = ExtendedELF('./libc.so.6')
+target_fd = libc.sym_obj['main_arena'].bins[3].fd # correct address of this field
+
+heap_chunk_addr = 0x55555555b000
+chunk_struct = libc.cast('malloc_chunk', heap_chunk_addr)
+target_fd = chunk_struct.fd # correct address of this field
+
+fake_tps = libc.craft('struct tcache_perthread_struct')
+fake_tps.counts[15] = 1
+fake_tps.entries[15] = 0x123456
+bytes(fake_tps) # payload bytes
+```
+
+## asm
+basic assembler/disassembler stuff because pwntools is ungodly slow
+`asm_x64`, `asm_x86`, `dis_x64`, etc etc
