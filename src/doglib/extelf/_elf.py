@@ -759,3 +759,5 @@ class CHeader(ExtendedELF):
         kwargs.setdefault('checksec', False)
         super().__init__(elf_path, **kwargs)
 
+    # remove annoying pwntools warning
+    def _populate_got(self): pass
