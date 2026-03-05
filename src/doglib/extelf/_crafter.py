@@ -1,7 +1,10 @@
 import os
 import re
 import struct
-from pwn import *
+from pwnlib.log import getLogger
+from pwnlib.util.cyclic import cyclic as _pwn_cyclic
+
+log = getLogger(__name__)
 
 class DWARFCrafter:
     """
@@ -563,9 +566,8 @@ class DWARFCrafter:
             chunk.cyclic()
             bytes(chunk)  # b'aaaabaaacaaa...'
         """
-        from pwn import cyclic as pwn_cyclic
         size = n if n is not None else self._size
-        data = pwn_cyclic(size)
+        data = _pwn_cyclic(size)
         self._backing[self._offset : self._offset + size] = data
 
     def values(self):
@@ -777,9 +779,8 @@ class DWARFArrayCrafter:
             arr.cyclic()
             bytes(arr)  # b'aaaabaaacaaa...'
         """
-        from pwn import cyclic as pwn_cyclic
         size = n if n is not None else self._total_bytes
-        data = pwn_cyclic(size)
+        data = _pwn_cyclic(size)
         self._backing[self._base_offset : self._base_offset + size] = data
 
     def copy(self):

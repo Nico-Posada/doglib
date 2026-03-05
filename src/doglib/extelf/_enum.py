@@ -1,5 +1,4 @@
 import re
-from pwn import *
 
 class DWARFEnum:
     """

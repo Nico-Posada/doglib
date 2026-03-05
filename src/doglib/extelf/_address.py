@@ -1,6 +1,8 @@
 import re
 import struct
-from pwn import *
+from pwnlib.log import getLogger
+
+log = getLogger(__name__)
 
 class DWARFAddress(int):
     """

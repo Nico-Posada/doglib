@@ -2,7 +2,7 @@ from ._address import DWARFAddress, DWARFArray
 from ._enum import DWARFEnum
 from ._crafter import DWARFCrafter, DWARFArrayCrafter
 from ._elf import ExtendedELF, CHeader, _CVarAccessor
-from ._ctypes import CTypes
+from ._builtin_types import CTypes
 
 # Lazy singleton instances of CTypes for the three common bit widths.
 # Access as:  from doglib.extelf import C64

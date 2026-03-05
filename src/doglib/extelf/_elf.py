@@ -4,8 +4,12 @@ import json
 import hashlib
 import subprocess
 import struct
-from pwn import *
+from pwnlib.log import getLogger
+from pwnlib.elf.elf import ELF
+from pwnlib.context import context
 from elftools.elf.elffile import ELFFile
+
+log = getLogger(__name__)
 
 from ._address import DWARFAddress, DWARFArray
 from ._enum import DWARFEnum
