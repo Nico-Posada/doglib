@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from pwn import *
 
-from doglib.extelf import CHeader, ExtendedELF, DWARFAddress
+from doglib.extelf import CHeader, ExtendedELF, DWARFAddress, C64
 
 # Load our types
 headers = CHeader("complex_structs.h")
@@ -616,6 +616,80 @@ assert inplace.current_state.value == 15
 inplace.current_state -= 3
 assert inplace.current_state.value == 12
 log.success("+= / -= in-place: PASSED")
+
+
+
+
+# test: bug where assigning outside of 2d array silently failed
+# Bug 1a: 1D OOB write visible in bytes()
+n = C64.craft('char[10]')
+n[50] = b'test'        # char[10] elem is 1 byte, so only 't' goes in at offset 50
+b = bytes(n)
+assert len(b) > 10,    f'bytes(n) still only {len(b)} bytes'
+assert b[50] == ord('t'), f'n[50] not t: {b[50]!r}'
+print('1D OOB visible in bytes(): PASSED')
+
+# Bug 1b: 2D OOB bytes write visible in bytes()
+m = C64.craft('char[10][10]')
+m[150] = b'test'       # row 150, each char written up to chunk_size=10; 4 bytes of 'test'
+b = bytes(m)
+assert len(b) > 100, f'bytes(m) still {len(b)} bytes'
+assert b[1500:1504] == b'test', f'm OOB not visible: {b[1500:1504]!r}'
+print('2D OOB bytes visible in bytes(): PASSED')
+
+# test: could not write ints to first index of 2d array
+
+# Bug 2a: int write to 2D row fails (was TypeError)
+m2 = C64.craft('char[10][10]')
+m2[1] = 1234           # fill all 10 chars in row 1 with low byte of 1234 (0xd2)
+row = bytes(m2)[10:20]
+assert row == bytes([1234 & 0xff] * 10), f'wrong row: {row!r}'
+print('m[1]=1234 fills row: PASSED')
+
+# Bug 2b: OOB int write to 2D (was TypeError)
+m3 = C64.craft('char[10][10]')
+m3[150] = 1234
+b = bytes(m3)
+assert len(b) > 100
+assert all(v == (1234 & 0xff) for v in b[1500:1510]), f'oob int fill wrong: {b[1500:1510]!r}'
+print('m[150]=1234 OOB int fills row: PASSED')
+
+# Sanity: 1D int assign still works
+n2 = C64.craft('char[10]')
+n2[3] = 65
+assert n2[3].value == 65
+print('1D n[3]=65: PASSED')
+
+# Sanity: sub-view bytes() unaffected
+arr = C64.craft('int[4]')
+arr[0] = 0xdead
+assert bytes(arr)[:4] == (0xdead).to_bytes(4, 'little')
+print('sub-view bytes() unaffected: PASSED')
+
+# test: list assignment
+j = C64.craft('int[3][3]')
+j[2] = [4, 5, 6]
+assert j[2][0].value == 4
+assert j[2][1].value == 5
+assert j[2][2].value == 6
+print('j[2] = [4,5,6]: PASSED')
+
+# nested list on 3D
+k = C64.craft('int[2][2][2]')
+k[0] = [[1,2],[3,4]]
+assert k[0][0][0].value == 1
+assert k[0][0][1].value == 2
+assert k[0][1][0].value == 3
+assert k[0][1][1].value == 4
+print('3D nested list: PASSED')
+
+# partial list (fewer elements than row)
+j2 = C64.craft('int[3][3]')
+j2[1] = [9, 8]
+assert j2[1][0].value == 9
+assert j2[1][1].value == 8
+assert j2[1][2].value == 0
+print('partial list: PASSED')
 
 log.success("All feature tests passed!")
 

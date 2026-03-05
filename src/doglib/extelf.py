@@ -789,6 +789,14 @@ class DWARFArrayCrafter:
             else:
                 sub.value = value
             return
+        if isinstance(value, (list, tuple)):
+            sub = self[index]
+            if isinstance(sub, DWARFArrayCrafter):
+                for i, v in enumerate(value):
+                    sub[i] = v
+            else:
+                sub.value = value[0] if value else 0
+            return
         inner = self._inner_count()
         offset = self._base_offset + index * inner * self._elem_size
         chunk_size = inner * self._elem_size

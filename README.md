@@ -22,8 +22,7 @@ stuff to make ropping faster
 only notable function right now is `quickrop` which sets up a system('/bin/sh') chain
 
 ## extelf
-very useful claude-slopped extension to pwntools `ELF`,
-lets you make use of debug symbols every way you wished you could in an exploit
+very useful claude-slopped extension to pwntools `ELF`. basically do Cc things in python
 - get the address of specific fields in a symbol
 - craft your own fake `struct`s to use in payloads
 - parse raw bytes into a struct
@@ -41,8 +40,22 @@ fake_tps.counts[15] = 1
 fake_tps.entries[15] = 0x123456
 bytes(fake_tps) # payload bytes
 ```
-and many more! a bunch of basic types are already included in `extelf.C`, `C32`, and `C64`, so
-you can play around with it yourself.
+and many more! a bunch of basic types are already included in `extelf.C`, `.C32`, and `.C64`, so
+you can quickly play around with it yourself:
+```python
+from doglib.extelf import C64
+j = C64.craft("int[3][3]")
+j.fill(0x18) # now all indices are 0x18
+j[1][1] # 0x18
+j[1][1] += 9
+j[1][1] # 0x21
+j[2] = [3,4,5]
+bytes(j) # b'\x18\x00\x00\x00\x18\x00\x00\x00.....'
+```
+*warning*: this module is 1,500+ lines of AI code that i have not thoroughly reviewed.
+while i have an extensive list of test cases, and fixed many bugs in the code,
+i absolutely cannot assert this library will work perfectly.
+
 
 ## asm
 basic assembler/disassembler stuff because pwntools is ungodly slow
