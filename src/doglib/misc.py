@@ -152,6 +152,52 @@ def pack_file(_flags = 0,
     file_struct = file_struct.ljust(0xd8, b"\x00")
     return file_struct
 
-"""
-TODO: blind dump elf with format string
-"""
+def find_libc_leak(memory_dump, target_addr, aligned=False, is_32bit=False):
+    ptr_sz = 4 if is_32bit else 8
+    
+    if len(memory_dump) < ptr_sz:
+        error(f"Memory dump is too small to contain a {ptr_sz * 8}-bit pointer.")
+        return None
+
+    lower_12 = target_addr & 0xfff
+    step = ptr_sz if aligned else 1
+    matches = []
+    
+    # int.from_bytes is faster than struct.unpack in tight Python loops
+    for i in range(0, len(memory_dump) - ptr_sz + 1, step):
+        ptr = int.from_bytes(memory_dump[i:i+ptr_sz], 'little')
+        if (ptr & 0xfff) == lower_12:
+            matches.append((i, ptr))
+            
+    if not matches:
+        error("No pointers matching the lower 12 bits were found in the dump.")
+        return None
+    
+    # Get unique pointers to gracefully handle duplicates of the same leak
+    unique_ptrs = list(set(ptr for offset, ptr in matches))
+    if len(unique_ptrs) == 1:
+        return unique_ptrs[0]
+        
+    # Apply heuristics for multiple distinct candidates
+    va_min = 0x40000000 if is_32bit else 0x700000000000
+    va_max = 0xffffffff if is_32bit else 0x7fffffffffff
+    
+    heuristic_matches = []
+    for offset, ptr in matches:
+        if va_min <= ptr <= va_max:
+            heuristic_matches.append((offset, ptr))
+            
+    if not heuristic_matches:
+        warn("No matches survived the heuristic filter. Might be wrong.")
+        return matches[0][1]
+        
+    unique_heuristic_ptrs = list(set(ptr for offset, ptr in heuristic_matches))
+    if len(unique_heuristic_ptrs) == 1:
+        return unique_heuristic_ptrs[0]
+        
+    warn(f"Multiple distinct candidates found, returning first. All found:")
+    for ptr in unique_heuristic_ptrs:
+        offsets = [off for off, p in heuristic_matches if p == ptr]
+        info(f"Candidate {hex(ptr)} found at offsets: {offsets[:3]}{'...' if len(offsets) > 3 else ''}")
+        
+    return heuristic_matches[0][1]

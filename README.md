@@ -22,7 +22,8 @@ stuff to make ropping faster
 only notable function right now is `quickrop` which sets up a system('/bin/sh') chain
 
 ## extelf
-pretty useful gpt-slopped extension to pwntools `ELF`
+very useful claude-slopped extension to pwntools `ELF`,
+lets you make use of debug symbols every way you wished you could in an exploit
 if the elf has debug symbols, lets you:
 - get the address of specific fields in a symbol
     - ^ but casted at a specific address
