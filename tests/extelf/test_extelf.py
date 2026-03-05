@@ -1,0 +1,1338 @@
+"""
+pytest test suite for doglib.extelf.
+
+Run from the project root:
+    pytest tests/extelf/
+
+Fixtures (headers, chal_elf, cwd) live in conftest.py.
+"""
+import math
+import os
+import struct
+import tempfile
+
+import pytest
+from pwnlib.util.cyclic import cyclic as pwn_cyclic
+from pwnlib.util.packing import p64
+
+from doglib.extelf import CHeader, DWARFAddress, DWARFArrayCrafter, C64
+
+# ============================================================
+# Integration: solve the compiled challenge binary (levels 1–10)
+# ============================================================
+
+def test_challenge_solve(headers, chal_elf):
+    """Send correctly crafted structs through every level of the challenge."""
+    from pwnlib.tubes.process import process
+    io = process("./challenge")
+    try:
+        # Level 1: Padding & Basics
+        basic = headers.craft('Basic')
+        basic.a = ord('X')
+        basic.b = 0x1337
+        basic.c = 0x42
+        io.sendafter(b"Basic\n", bytes(basic))
+
+        # Level 2: Arrays & Pointers
+        arr_fun = headers.craft('ArrayFun')
+        arr_fun.arr[0] = 10
+        arr_fun.arr[4] = 50
+        arr_fun.ptr = 0xdeadbeef
+        io.sendafter(b"ArrayFun\n", bytes(arr_fun))
+
+        # Level 3: Unions & Anonymous Structs
+        union_madness = headers.craft('UnionMadness')
+        union_madness.type = 1
+        union_madness.data.coords.x = 0x11223344
+        union_madness.data.coords.y = 0x55667788
+        io.sendafter(b"UnionMadness\n", bytes(union_madness))
+
+        # Level 4: Deep Nesting & Array Bytes
+        boss = headers.craft('BossFight')
+        boss.b[1].a = ord('Z')
+        boss.b[1].b = 999
+        boss.u.data.raw = b"AAAAAAAW"
+        io.sendafter(b"BossFight\n", bytes(boss))
+
+        # Level 5: Truncation & Overflows
+        edge = headers.craft('EdgeCases')
+        edge.small_int = 0xdeadbeef
+        edge.small_buf = b"AAAA\x00TRASH_DATA_THAT_GETS_DROPPED"
+        edge.big_int = -1
+        io.sendafter(b"EdgeCases\n", bytes(edge))
+
+        # Level 6: DWARF Array Strides & Offset Math
+        target_addr = int(chal_elf.sym_obj['target_sym'].arr[2].ptr)
+        io.sendafter(b"(8 bytes)\n", p64(target_addr))
+
+        # Level 7: Enums, Signed Values, Multi-Dimensional Arrays & Floats
+        final = headers.craft('FinalBoss')
+        final.current_state = -1   # CRASHED
+        final.negative_val = -1337
+        final.matrix[1][2] = 9999
+        final.max_hp = 1000.5
+        final.current_hp = 1337.75
+        io.sendafter(b"FinalBoss\n", bytes(final))
+
+        # Level 8: Multi-Dimensional Array Proper Indexing (2D + 3D)
+        md = headers.craft('MultiDimTest')
+        md.grid[1][2] = 42
+        md.grid[2][3] = 99
+        md.cube[1][0][2] = ord('Q')
+        md.cube[0][2][3] = ord('Z')
+        io.sendafter(b"MultiDimTest\n", bytes(md))
+
+        # Level 9: Anonymous Struct/Union Members
+        am = headers.craft('AnonMember')
+        am.type = 5
+        am.as_int = 0xCAFE
+        am.x = 100
+        am.y = 200
+        io.sendafter(b"AnonMember\n", bytes(am))
+
+        # Level 10: Sub-Struct Assignment & Value Readback
+        hdr = headers.craft('Basic')
+        hdr.a = ord('A')
+        hdr.b = 1234
+        hdr.c = 42
+        wrapper = headers.craft('Wrapper')
+        wrapper.header = hdr
+        wrapper.payload = 0xBEEF
+        assert wrapper.payload.value == 0xBEEF
+        assert wrapper.header.a.value == ord('A')
+        assert wrapper.header.b.value == 1234
+        io.sendafter(b"Wrapper\n", bytes(wrapper))
+
+        io.wait_for_close()
+    finally:
+        io.close()
+
+
+# ============================================================
+# Enum
+# ============================================================
+
+def test_enum_constants(headers):
+    state = headers.enum('State')
+    assert state.IDLE == 0
+    assert state.RUNNING == 1
+    assert state.CRASHED == -1
+    assert 'IDLE' in state
+    assert 'NONEXISTENT' not in state
+
+
+def test_enum_assignment_in_craft(headers):
+    state = headers.enum('State')
+    fb = headers.craft('FinalBoss')
+    fb.current_state = state.CRASHED
+    assert fb.current_state.value == 0xFFFFFFFF
+
+
+def test_enum_iteration(headers):
+    state = headers.enum('State')
+    items = dict(state)
+    assert items['IDLE'] == 0
+    assert items['CRASHED'] == -1
+
+
+def test_enum_missing_constant_raises(headers):
+    state = headers.enum('State')
+    with pytest.raises(AttributeError):
+        _ = state.NONEXISTENT
+
+
+def test_enum_repr(headers):
+    state = headers.enum('State')
+    r = repr(state)
+    assert 'IDLE' in r and 'CRASHED' in r
+
+
+# ============================================================
+# sizeof / offsetof / containerof / resolve_type
+# ============================================================
+
+def test_sizeof_structs(headers):
+    assert headers.sizeof('Basic') == 12
+    assert headers.sizeof('ArrayFun') == 32
+    assert headers.sizeof('FinalBoss') == 48
+    assert headers.sizeof('EdgeCases') == 16
+
+
+def test_sizeof_primitives(headers):
+    assert headers.sizeof('int') == 4
+    assert headers.sizeof('char') == 1
+    assert headers.sizeof('short') == 2
+    assert headers.sizeof('long long') == 8
+    assert headers.sizeof('double') == 8
+    assert headers.sizeof('unsigned short') == 2
+    assert headers.sizeof('unsigned long') == 8
+
+
+def test_sizeof_arrays(headers):
+    assert headers.sizeof('int[100]') == 400
+    assert headers.sizeof('char[16]') == 16
+    assert headers.sizeof('Basic[3][2]') == 3 * 2 * headers.sizeof('Basic')
+
+
+def test_sizeof_pointer(headers):
+    assert headers.sizeof('int *') == 8
+
+
+def test_offsetof(headers):
+    assert headers.offsetof('Basic', 'a') == 0
+    assert headers.offsetof('Basic', 'b') == 4
+    assert headers.offsetof('Basic', 'c') == 8
+    assert headers.offsetof('FinalBoss', 'matrix') == 8
+    assert headers.offsetof('FinalBoss', 'matrix[1][2]') == 28
+    assert headers.offsetof('FinalBoss', 'current_hp') == 40
+    assert headers.offsetof('BossFight', 'u.data.raw') == 32
+
+
+def test_offsetof_invalid_raises(headers):
+    with pytest.raises(ValueError):
+        headers.offsetof('Basic', 'nonexistent')
+
+
+def test_containerof(headers):
+    member_addr = 0x1000 + headers.offsetof('BossFight', 'u')
+    base = headers.containerof('BossFight', 'u', member_addr)
+    assert base == 0x1000
+
+
+def test_containerof_va_wrapping(headers):
+    mask = (1 << 64) - 1
+    result = headers.containerof('Basic', 'b', 0x4)
+    assert result == (0x4 - headers.offsetof('Basic', 'b')) & mask
+
+
+def test_resolve_type(headers):
+    assert headers.resolve_type('State') == 'enum State'
+
+
+def test_describe_no_crash(headers):
+    headers.describe('FinalBoss')
+    headers.describe('AnonMember')
+
+
+def test_describe_primitive_raises(headers):
+    with pytest.raises(ValueError):
+        headers.describe('int')
+
+
+# ============================================================
+# parse
+# ============================================================
+
+def test_parse_basic(headers):
+    crafted = headers.craft('Basic')
+    crafted.a = ord('Z')
+    crafted.b = 0xDEAD
+    crafted.c = 42
+    parsed = headers.parse('Basic', bytes(crafted))
+    assert parsed.a.value == ord('Z')
+    assert parsed.b.value == 0xDEAD
+    assert parsed.c.value == 42
+
+
+def test_parse_nested_struct(headers):
+    crafted = headers.craft('BossFight')
+    crafted.b[0].a = ord('A')
+    crafted.b[0].b = 111
+    crafted.b[1].a = ord('B')
+    crafted.b[1].b = 222
+    parsed = headers.parse('BossFight', bytes(crafted))
+    assert parsed.b[0].a.value == ord('A')
+    assert parsed.b[1].b.value == 222
+
+
+def test_parse_short_data_zero_pads(headers):
+    short_data = b'\x41\x00\x00\x00'   # only 4 bytes, Basic is 12
+    parsed = headers.parse('Basic', short_data)
+    b = bytes(parsed)
+    assert b[:4] == short_data
+    assert b[4:] == b'\x00' * (headers.sizeof('Basic') - 4)
+
+
+def test_parse_long_data_truncates(headers):
+    long_data = bytes(range(64))
+    parsed = headers.parse('Basic', long_data)
+    assert len(bytes(parsed)) == headers.sizeof('Basic')
+    assert bytes(parsed) == long_data[:headers.sizeof('Basic')]
+
+
+# ============================================================
+# craft / parse / cast with count and 2-D type-string syntax
+# ============================================================
+
+def test_craft_with_count(headers):
+    arr = headers.craft('Basic', count=4)
+    assert len(arr) == 4
+    assert len(bytes(arr)) == 4 * headers.sizeof('Basic')
+    arr[0].a = ord('A'); arr[0].b = 111
+    arr[1].a = ord('B'); arr[1].b = 222
+    arr[2].a = ord('C'); arr[3].b = 444
+    assert arr[0].a.value == ord('A')
+    assert arr[1].b.value == 222
+    assert arr[2].a.value == ord('C')
+    assert arr[3].b.value == 444
+
+
+def test_parse_with_count(headers):
+    arr = headers.craft('Basic', count=4)
+    arr[0].a = ord('A'); arr[1].b = 222; arr[3].b = 444
+    parsed = headers.parse('Basic', bytes(arr), count=4)
+    assert parsed[0].a.value == ord('A')
+    assert parsed[1].b.value == 222
+    assert parsed[3].b.value == 444
+
+
+def test_cast_with_count(headers):
+    base = 0x1000
+    cast_arr = headers.cast('Basic', base, count=8)
+    elem = headers.sizeof('Basic')
+    assert len(cast_arr) == 8
+    assert int(cast_arr[0]) == base
+    assert int(cast_arr[3]) == base + 3 * elem
+    assert int(cast_arr[3].b) == base + 3 * elem + headers.offsetof('Basic', 'b')
+
+
+def test_2d_type_string_craft(headers):
+    arr = headers.craft('Basic[3][2]')
+    assert len(arr) == 3
+    assert len(arr[0]) == 2
+    arr[0][0].a = ord('X')
+    arr[0][1].b = 99
+    arr[2][1].a = ord('Z')
+    assert arr[0][0].a.value == ord('X')
+    assert arr[0][1].b.value == 99
+    assert arr[2][1].a.value == ord('Z')
+    assert len(bytes(arr)) == 3 * 2 * headers.sizeof('Basic')
+
+
+def test_2d_type_string_parse(headers):
+    arr = headers.craft('Basic[3][2]')
+    arr[0][0].a = ord('X')
+    arr[2][1].a = ord('Z')
+    parsed = headers.parse('Basic[3][2]', bytes(arr))
+    assert parsed[0][0].a.value == ord('X')
+    assert parsed[2][1].a.value == ord('Z')
+
+
+def test_2d_type_string_cast(headers):
+    elem = headers.sizeof('Basic')
+    cast = headers.cast('Basic[3][2]', 0x2000)
+    assert int(cast[0][0]) == 0x2000
+    assert int(cast[1][0]) == 0x2000 + 2 * elem
+    assert int(cast[2][1]) == 0x2000 + 5 * elem
+    assert int(cast[2][1].b) == 0x2000 + 5 * elem + headers.offsetof('Basic', 'b')
+
+
+def test_primitive_type_arrays(headers):
+    cast_arr = headers.cast('int[10]', 0x3000)
+    assert len(cast_arr) == 10
+    assert int(cast_arr[5]) == 0x3000 + 20
+
+    ci = headers.craft('int[4]')
+    ci[0].value = 0x41414141
+    ci[3].value = 123456
+    assert len(bytes(ci)) == 16
+    pi = headers.parse('int[4]', bytes(ci))
+    assert pi[0].value == 0x41414141
+    assert pi[3].value == 123456
+
+    ci[1].value = -42
+    assert headers.parse('int[4]', bytes(ci))[1].value == -42
+
+
+def test_2d_primitive_arrays(headers):
+    mat = headers.craft('int[3][4]')
+    mat[1][2].value = 42
+    mat[0][0].value = 99
+    assert mat[1][2].value == 42
+    assert mat[0][0].value == 99
+    assert len(bytes(mat)) == 48
+
+
+# ============================================================
+# DWARFAddress arithmetic and repr
+# ============================================================
+
+def test_dwarf_address_repr(chal_elf):
+    r = repr(chal_elf.sym_obj['target_sym'])
+    assert 'DWARFAddress' in r
+    assert 'type=' in r
+
+
+def test_sym_obj_contains(chal_elf):
+    assert 'target_sym' in chal_elf.sym_obj
+    assert 'nonexistent_var' not in chal_elf.sym_obj
+
+
+def test_dwarf_address_arithmetic(headers):
+    mask = (1 << 64) - 1
+    base = headers.cast('Basic', 0x1000)
+
+    # add preserves type and value
+    nxt = base + 0x20
+    assert isinstance(nxt, DWARFAddress)
+    assert int(nxt) == 0x1020
+    assert int(nxt.b) == 0x1020 + headers.offsetof('Basic', 'b')
+
+    # sub preserves type
+    prv = base - 0x10
+    assert isinstance(prv, DWARFAddress)
+    assert int(prv) == 0x0FF0
+
+    # sub of two DWARFAddresses returns plain int
+    other = headers.cast('Basic', 0x1020)
+    diff = other - base
+    assert not isinstance(diff, DWARFAddress)
+    assert diff == 0x20
+
+    # radd
+    radd_result = 0x100 + base
+    assert isinstance(radd_result, DWARFAddress)
+    assert int(radd_result) == 0x1100
+
+    # VA wrapping
+    near_max = headers.cast('Basic', 0xffffffffffffff00)
+    wrapped = near_max + 0x200
+    assert int(wrapped) == (0xffffffffffffff00 + 0x200) & mask
+
+    # p64 compatibility
+    assert p64(nxt) == p64(0x1020)
+
+
+def test_dwarf_address_field_error(headers):
+    int_addr = headers.cast('int', 0x5000)
+    with pytest.raises(AttributeError):
+        _ = int_addr.somefield
+
+
+def test_dwarf_address_index_error(headers):
+    int_addr = headers.cast('int', 0x5000)
+    with pytest.raises(TypeError):
+        _ = int_addr[0]
+
+
+# ============================================================
+# Virtual-address space
+# ============================================================
+
+def test_va_space_wrapping(headers):
+    mask = (1 << 64) - 1
+    base = 0xffffffffffffff00
+    va_arr = headers.cast('int', base, count=1000)
+    assert int(va_arr[100]) == (base + 100 * 4) & mask
+    chunk_va = headers.cast('Basic', 0xfffffffffffffff0)
+    assert int(chunk_va.b) == (0xfffffffffffffff0 + headers.offsetof('Basic', 'b')) & mask
+
+
+def test_pointer_cast(headers):
+    mask = (1 << 64) - 1
+    ptr = headers.cast('int *', 0x1000)
+    assert int(ptr[0]) == 0x1000
+    assert int(ptr[520292]) == 0x1000 + 520292 * 4
+    assert int(ptr[-1]) == (0x1000 - 4) & mask
+
+
+def test_pointer_indexing_on_dwarf_address(headers):
+    af = headers.cast('ArrayFun', 0x5000)
+    ptr_field = af.ptr
+    assert int(ptr_field[0]) == int(ptr_field)
+    assert int(ptr_field[10]) == int(ptr_field) + 10
+
+
+def test_exact_va_wrap(headers):
+    ptr = headers.cast('long long *', 0x1000)
+    wrap_idx = (1 << 64) // 8
+    assert int(ptr[wrap_idx]) == 0x1000
+
+
+# ============================================================
+# OOB writes, padding, integer / list assignment
+# ============================================================
+
+def test_oob_write_arraycrafter(headers):
+    arr = headers.craft('int[3][3]')
+    arr[5][5] = 42
+    assert arr[5][5].value == 42
+
+
+def test_oob_write_crafter(headers):
+    boss = headers.craft('BossFight')
+    boss.b[10].a = ord('X')
+    assert boss.b[10].a.value == ord('X')
+
+
+def test_craft_pad_parameter(headers):
+    padded = headers.craft('int[3]', pad=64)
+    padded[10] = 0xbeef
+    assert padded[10].value == 0xbeef
+
+
+def test_integer_assignment_arraycrafter(headers):
+    arr = headers.craft('int[4]')
+    arr[0] = 111
+    arr[3] = -42
+    assert arr[0].value == 111
+    assert int.from_bytes(bytes(arr[3]), 'little', signed=True) == -42
+
+
+def test_integer_assignment_struct_members(headers):
+    fb = headers.craft('FinalBoss')
+    fb.matrix[0][0] = 42
+    fb.matrix[1][2] = 99
+    assert fb.matrix[0][0].value == 42
+    assert fb.matrix[1][2].value == 99
+
+
+def test_oob_1d_visible_in_bytes():
+    n = C64.craft('char[10]')
+    n[50] = b'test'
+    b = bytes(n)
+    assert len(b) > 10
+    assert b[50] == ord('t')
+
+
+def test_oob_2d_visible_in_bytes():
+    m = C64.craft('char[10][10]')
+    m[150] = b'test'
+    b = bytes(m)
+    assert len(b) > 100
+    assert b[1500:1504] == b'test'
+
+
+def test_int_write_to_2d_row():
+    m = C64.craft('char[10][10]')
+    m[1] = 1234
+    row = bytes(m)[10:20]
+    assert row == bytes([1234 & 0xff] * 10)
+
+
+def test_oob_int_write_2d():
+    m = C64.craft('char[10][10]')
+    m[150] = 1234
+    b = bytes(m)
+    assert len(b) > 100
+    assert all(v == (1234 & 0xff) for v in b[1500:1510])
+
+
+def test_list_assignment():
+    j = C64.craft('int[3][3]')
+    j[2] = [4, 5, 6]
+    assert j[2][0].value == 4
+    assert j[2][1].value == 5
+    assert j[2][2].value == 6
+
+
+def test_list_assignment_3d():
+    k = C64.craft('int[2][2][2]')
+    k[0] = [[1, 2], [3, 4]]
+    assert k[0][0][0].value == 1
+    assert k[0][0][1].value == 2
+    assert k[0][1][0].value == 3
+    assert k[0][1][1].value == 4
+
+
+def test_list_assignment_partial():
+    j = C64.craft('int[3][3]')
+    j[1] = [9, 8]
+    assert j[1][0].value == 9
+    assert j[1][1].value == 8
+    assert j[1][2].value == 0
+
+
+# ============================================================
+# Slice assignment
+# ============================================================
+
+def test_slice_assignment_int_list(headers):
+    arr = headers.craft('ArrayFun')
+    arr.arr[0:3] = [10, 20, 30]
+    assert arr.arr[0].value == 10
+    assert arr.arr[1].value == 20
+    assert arr.arr[2].value == 30
+    assert arr.arr[3].value == 0
+
+
+def test_slice_assignment_bytes(headers):
+    um = headers.craft('UnionMadness')
+    um.data.raw[0:4] = b"\xAA\xBB\xCC\xDD"
+    raw_out = bytes(um.data.raw)
+    assert raw_out[0:4] == b"\xAA\xBB\xCC\xDD"
+
+
+# ============================================================
+# Indexing (negative, iter)
+# ============================================================
+
+def test_negative_index_within_bounds(headers):
+    fb = headers.craft('FinalBoss')
+    fb.matrix[0][-1]  # offset 8 - 4 = 4, within struct — must not raise
+
+
+def test_negative_index_before_bounds_raises(headers):
+    fb = headers.craft('FinalBoss')
+    with pytest.raises(IndexError):
+        fb.matrix[0][-3]   # offset 8 - 12 = -4, before struct start
+
+
+def test_arraycrafter_negative_index_raises():
+    arr = C64.craft('int[5]')
+    with pytest.raises(IndexError):
+        arr[-1]
+
+
+def test_arraycrafter_iter():
+    arr = C64.craft('int[4]')
+    for i, v in enumerate([10, 20, 30, 40]):
+        arr[i] = v
+    assert [e.value for e in arr] == [10, 20, 30, 40]
+
+
+def test_crafter_array_iter(headers):
+    fb = headers.craft('FinalBoss')
+    fb.matrix[0][0] = 1
+    fb.matrix[0][1] = 2
+    fb.matrix[0][2] = 3
+    assert [e.value for e in fb.matrix[0]] == [1, 2, 3]
+
+
+def test_dwarf_array_iter(headers):
+    it = headers.cast('Basic[3]', 0x1000)
+    addrs = list(it)
+    assert len(addrs) == 3
+    sz = headers.sizeof('Basic')
+    for i, addr in enumerate(addrs):
+        assert int(addr) == 0x1000 + i * sz
+
+
+def test_dwarf_array_iter_unbounded_raises(headers):
+    ptr = headers.cast('Basic *', 0x2000)
+    with pytest.raises(TypeError):
+        list(ptr)
+
+
+# ============================================================
+# DWARFArray slice / len
+# ============================================================
+
+def test_dwarf_array_slice(headers):
+    bounded = headers.cast('Basic[5]', 0x3000)
+    sliced = bounded[1:4]
+    assert isinstance(sliced, list) and len(sliced) == 3
+    bs = headers.sizeof('Basic')
+    assert int(sliced[0]) == 0x3000 + 1 * bs
+    assert int(sliced[2]) == 0x3000 + 3 * bs
+
+
+def test_dwarf_array_slice_unbounded_raises(headers):
+    with pytest.raises(TypeError):
+        _ = headers.cast('int *', 0x4000)[1:3]
+
+
+def test_dwarf_array_len_unbounded_raises(headers):
+    with pytest.raises(TypeError):
+        len(headers.cast('int *', 0x4000))
+
+
+# ============================================================
+# craft / cast error paths
+# ============================================================
+
+def test_craft_pointer_raises(headers):
+    with pytest.raises(ValueError):
+        headers.craft('int *')
+
+
+def test_cast_double_pointer_raises(headers):
+    with pytest.raises(ValueError):
+        headers.cast('int **', 0x1000)
+
+
+# ============================================================
+# Operators: bitwise, comparison, arithmetic, bool, format
+# ============================================================
+
+def test_bitwise_operators(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 0xff
+    assert (fb.current_state & 0x0f) == 0x0f
+    assert (fb.current_state | 0x100) == 0x1ff
+    assert (fb.current_state ^ 0xf0) == 0x0f
+    assert (fb.current_state >> 4) == 0x0f
+    assert (fb.current_state << 4) == 0xff0
+    assert (~fb.current_state) == ~0xff
+    assert (0xff00 & fb.current_state) == 0
+    assert (fb.current_state ** 2) == 0xff ** 2
+
+
+def test_comparison_operators(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 42
+    assert fb.current_state == 42
+    assert fb.current_state != 0
+    assert fb.current_state < 100
+    assert fb.current_state <= 42
+    assert fb.current_state > 10
+    assert fb.current_state >= 42
+    assert not (fb.current_state > 100)
+
+
+def test_division_modulo_divmod(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 17
+    assert fb.current_state / 4 == 4.25
+    assert fb.current_state // 4 == 4
+    assert fb.current_state % 4 == 1
+    assert divmod(fb.current_state, 4) == (4, 1)
+    assert 100 / fb.current_state == 100 / 17
+    assert 100 % fb.current_state == 100 % 17
+
+
+def test_rounding(headers):
+    fb = headers.craft('FinalBoss')
+    fb.max_hp = 3.7
+    assert round(fb.max_hp) == 4
+    assert round(fb.max_hp, 1) == 3.7
+    assert math.floor(fb.max_hp) == 3
+    assert math.ceil(fb.max_hp) == 4
+    assert math.trunc(fb.max_hp) == 3
+
+
+def test_bool_primitive(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 0
+    assert not bool(fb.current_state)
+    fb.current_state = 1
+    assert bool(fb.current_state)
+
+
+def test_bool_struct_via_bytes(headers):
+    basic = headers.craft('Basic')
+    assert not bool(basic)      # all-zero → False
+    basic.a = 1
+    assert bool(basic)          # non-zero → True
+    basic.a = 0
+    assert not bool(basic)      # zeroed again → False
+
+
+def test_format_specifiers(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 0x41
+    fb.max_hp = 3.14
+    assert f'{fb.current_state:#x}' == '0x41'
+    assert f'{fb.current_state:08x}' == '00000041'
+    assert f'{fb.max_hp:.2f}' == '3.14'
+
+
+def test_format_on_struct(headers):
+    s = headers.craft('Basic')
+    s.fill(0x41)
+    assert isinstance(f'{s}', str)
+
+
+def test_repr(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 42
+    fb.negative_val = -10
+    fb.max_hp = 1.5
+    assert '0x2a' in repr(fb.current_state)
+    assert '-10' in repr(fb.negative_val)
+    assert '1.5' in repr(fb.max_hp)
+    full = repr(fb)
+    assert 'FinalBoss' in full
+    assert 'current_state' in full
+    assert 'matrix=<array' in full
+
+
+def test_hash_primitive(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 42
+    h = hash(fb.current_state)
+    assert isinstance(h, int)
+    d = {fb.current_state: 'test'}
+    assert d[42] == 'test'
+
+
+def test_hash_struct_raises(headers):
+    with pytest.raises(TypeError):
+        hash(headers.craft('Basic'))
+
+
+def test_p64_on_fields(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 0x41
+    fb.matrix[0][0] = 0xdeadbeef
+    assert p64(fb.current_state) == p64(0x41)
+    assert p64(fb.matrix[0][0]) == p64(0xdeadbeef)
+    assert hex(fb.current_state) == '0x41'
+
+    arr = C64.craft('int[4]')
+    arr[0] = 0xbeef
+    assert p64(arr[0]) == p64(0xbeef)
+
+    with pytest.raises(TypeError):
+        int(headers.craft('BossFight').b[0])
+
+
+# ============================================================
+# Container API: __contains__, items(), dump(), values(), fill(), cyclic(), copy()
+# ============================================================
+
+def test_contains_struct(headers):
+    fb = headers.craft('FinalBoss')
+    assert 'current_state' in fb
+    assert 'negative_val' in fb
+    assert 'does_not_exist' not in fb
+
+
+def test_items(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 99
+    fb.max_hp = 7.5
+    item_dict = dict(fb.items())
+    assert 'current_state' in item_dict
+    assert 'max_hp' in item_dict
+    assert 'matrix' in item_dict
+    assert item_dict['current_state'].value == 99
+
+
+def test_dump_no_crash(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 1
+    fb.negative_val = -42
+    fb.max_hp = 2.5
+    fb.matrix[0][0] = 1
+    fb.matrix[1][2] = 6
+    fb.dump()   # must not raise
+
+
+def test_items_dump_on_primitive_raises(headers):
+    prim = headers.craft('Basic').a
+    with pytest.raises(TypeError):
+        list(prim.items())
+    with pytest.raises(TypeError):
+        prim.dump()
+
+
+def test_values_arraycrafter():
+    arr = C64.craft('int[4]')
+    for i in range(4):
+        arr[i] = i + 1
+    assert arr.values() == [1, 2, 3, 4]
+
+    grid = C64.craft('int[2][3]')
+    vals = [[10, 20, 30], [40, 50, 60]]
+    for r in range(2):
+        for c in range(3):
+            grid[r][c] = vals[r][c]
+    assert grid.values() == vals
+
+
+def test_char_array_values(headers):
+    arr = headers.craft('char[5]')
+    for i in range(5):
+        arr[i] = ord('A') + i
+    assert arr.values() == [65, 66, 67, 68, 69]
+
+
+def test_fill(headers):
+    arr = headers.craft('int[6]')
+    arr.fill(0xbeef)
+    assert all(v == 0xbeef for v in arr.values())
+
+
+def test_fill_patterns(headers):
+    s = headers.craft('Basic')
+    s.fill(b'\xde\xad')
+    assert bytes(s) == b'\xde\xad' * 6
+
+
+def test_fill_errors(headers):
+    with pytest.raises(ValueError):
+        headers.craft('Basic').fill(256)
+    with pytest.raises(ValueError):
+        headers.craft('Basic').fill(b'')
+    with pytest.raises(TypeError):
+        headers.craft('Basic').fill(1.5)
+
+
+def test_2d_fill(headers):
+    arr = headers.craft('int[3][4]')
+    arr.fill(0x42)
+    assert all(arr[r][c].value == 0x42 for r in range(3) for c in range(4))
+
+
+def test_cyclic(headers):
+    s = headers.craft('Basic')
+    s.cyclic()
+    assert bytes(s) == pwn_cyclic(headers.sizeof('Basic'))
+
+    arr = headers.craft('int[4]')
+    arr.cyclic()
+    assert bytes(arr) == pwn_cyclic(16)
+
+
+def test_copy_crafter(headers):
+    orig = headers.craft('FinalBoss')
+    orig.current_state = 77
+    cloned = orig.copy()
+    cloned.current_state = 0
+    assert orig.current_state.value == 77
+    assert cloned.current_state.value == 0
+
+
+def test_copy_arraycrafter():
+    orig = C64.craft('int[4]')
+    orig[0] = 10
+    cloned = orig.copy()
+    cloned[0] = 999
+    assert orig[0].value == 10
+    assert cloned[0].value == 999
+
+
+def test_copy_subview_independence(headers):
+    boss = headers.craft('BossFight')
+    boss.b[0].a = ord('X')
+    boss.b[1].a = ord('Y')
+    sub_copy = boss.b[0].copy()
+    sub_copy.a = ord('Z')
+    assert boss.b[0].a.value == ord('X')
+    assert sub_copy.a.value == ord('Z')
+
+
+# ============================================================
+# Memory model: unions, shared backing, sub-crafter size
+# ============================================================
+
+def test_union_memory_overlap(headers):
+    um = headers.craft('UnionMadness')
+    um.data.coords.x = 0x12345678
+    raw = bytes(um.data.raw)
+    assert raw[:4] == b'\x78\x56\x34\x12'
+
+
+def test_sub_crafter_shared_backing(headers):
+    boss = headers.craft('BossFight')
+    boss.b[0].a = ord('M')
+    assert bytes(boss)[0] == ord('M')
+
+
+def test_sub_crafter_bytes_size(headers):
+    bf = headers.craft('BossFight')
+    bf.b[1].b = 0xCAFE
+    sub = bytes(bf.b[1])
+    assert len(sub) == headers.sizeof('Basic')
+    assert struct.unpack_from('<i', sub, 4)[0] == 0xCAFE
+
+
+def test_2d_sub_view_sharing(headers):
+    parent = headers.craft('int[3][4]')
+    row = parent[1]
+    row[0] = 0xABCD
+    assert parent[1][0].value == 0xABCD
+
+
+# ============================================================
+# Numeric conversions, truncation, in-place ops, augmented assign
+# ============================================================
+
+def test_integer_truncation(headers):
+    ec = headers.craft('EdgeCases')
+    ec.small_int = 0xdeadbeef   # unsigned short → 0xbeef
+    assert ec.small_int.value == 0xbeef
+    ec.big_int = -1
+    assert ec.big_int.value == -1
+
+
+def test_negative_unsigned_wraps(headers):
+    ec = headers.craft('EdgeCases')
+    ec.small_int = -1           # unsigned short → 0xffff
+    assert ec.small_int.value == 0xffff
+
+
+def test_value_setter(headers):
+    pf = headers.craft('Basic')
+    pf.b.value = 9999
+    assert pf.b.value == 9999
+
+
+def test_float_int_conversions(headers):
+    fb = headers.craft('FinalBoss')
+    fb.max_hp = 3.5
+    assert float(fb.max_hp) == 3.5
+    fb.current_state = 7
+    assert int(fb.current_state) == 7
+
+
+def test_inplace_operators(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 10
+    fb.current_state += 5
+    assert fb.current_state.value == 15
+    fb.current_state -= 3
+    assert fb.current_state.value == 12
+
+
+def test_augmented_assign_semantics(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 10
+    local = fb.current_state
+    local += 99                 # detached: rebinds local to plain int
+    assert type(local) is int
+    assert fb.current_state.value == 10   # parent unchanged
+    fb.current_state += 5       # member-expression form writes back
+    assert fb.current_state.value == 15
+
+
+def test_true_dunder_attr(headers):
+    s = headers.craft('Basic')
+    s.__doc__ = 'hello'         # real Python dunder → stored on object
+    assert s.__doc__ == 'hello'
+    assert bytes(s) == bytes(headers.sizeof('Basic'))   # backing untouched
+
+
+# ============================================================
+# C struct fields with dunder-like names (e.g. __finish)
+# ============================================================
+
+def test_dunder_struct_fields(tmp_path):
+    hdr_src = """\
+typedef struct testing {
+    unsigned long long __dummy;
+    unsigned long long __dummy2;
+    unsigned long long __finish;
+} testing;
+"""
+    header_file = tmp_path / "testing.h"
+    header_file.write_text(hdr_src)
+    j = CHeader(str(header_file))
+    m = j.craft('testing')
+
+    m.__finish = 0x1234568
+    assert m.__finish.value == 0x1234568
+
+    m.__dummy = 0x4949
+    assert m.__dummy.value == 0x4949
+
+    vals = struct.unpack_from('<QQQ', bytes(m))
+    assert vals[0] == 0x4949
+    assert vals[2] == 0x1234568
+
+
+# ============================================================
+# Bytes assignment: truncation and zero-padding
+# ============================================================
+
+def test_bytes_truncated_to_field(headers):
+    s = headers.craft('Basic')
+    s.a = b'\x41\x42\x43\x44\x45'   # 5 bytes into 1-byte char
+    assert bytes(s)[0] == 0x41
+    assert bytes(s)[1:4] == b'\x00\x00\x00'
+
+
+def test_bytes_zero_padded_to_field(headers):
+    s = headers.craft('Basic')
+    s.b = b'\xef'                    # 1 byte into 4-byte int
+    assert bytes(s)[4] == 0xef
+    assert bytes(s)[5:8] == b'\x00\x00\x00'
+
+
+# ============================================================
+# Pointer fields
+# ============================================================
+
+def test_pointer_field_read_write(headers):
+    af = headers.craft('ArrayFun')
+    af.ptr = 0xdeadbeef12345678
+    assert af.ptr.value == 0xdeadbeef12345678
+    assert p64(af.ptr) == p64(0xdeadbeef12345678)
+
+
+# ============================================================
+# DWARFCrafter new methods: values(), index(), count(), eq, add, mul, radd
+# ============================================================
+
+def test_crafter_values(headers):
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 2
+    assert fb.current_state.values() == 2   # primitive
+
+    fb.matrix[0][0] = 10
+    fb.matrix[0][1] = 20
+    fb.matrix[1][2] = 99
+    assert fb.matrix.values() == [[10, 20, 0], [0, 0, 99]]  # array field
+
+    d = fb.values()
+    assert isinstance(d, dict)
+    assert 'current_state' in d and 'matrix' in d
+    assert d['matrix'] == [[10, 20, 0], [0, 0, 99]]
+
+
+def test_crafter_index(headers):
+    fb = headers.craft('FinalBoss')
+    fb.matrix[0][1] = 7
+    fb.matrix[0][2] = 7
+    assert fb.matrix[0].index(7) == 1
+    assert fb.matrix[0].index(7, 2) == 2
+    with pytest.raises(ValueError):
+        fb.matrix[0].index(99)
+    with pytest.raises(TypeError):
+        fb.current_state.index(1)   # non-array
+
+
+def test_crafter_count(headers):
+    fb = headers.craft('FinalBoss')
+    fb.matrix[1][0] = 5
+    fb.matrix[1][1] = 5
+    fb.matrix[1][2] = 3
+    assert fb.matrix[1].count(5) == 2
+    assert fb.matrix[1].count(3) == 1
+    assert fb.matrix[1].count(0) == 0
+
+
+def test_crafter_eq_struct(headers):
+    a = headers.craft('Basic')
+    b = headers.craft('Basic')
+    a.a = 0x41
+    b.a = 0x41
+    assert a == b
+    b.a = 0x42
+    assert a != b
+    assert a == bytes(a)
+
+
+def test_crafter_add_struct(headers):
+    a = headers.craft('Basic')
+    b = headers.craft('Basic')
+    a.a = 0x11
+    b.a = 0x22
+    combined = a + b
+    assert isinstance(combined, DWARFArrayCrafter)
+    assert len(combined) == 2
+    assert combined[0].a.value == 0x11
+    assert combined[1].a.value == 0x22
+    with pytest.raises(TypeError):
+        a + headers.craft('FinalBoss')
+
+
+def test_crafter_mul_struct(headers):
+    base = headers.craft('Basic')
+    base.a = 0x42   # fits in signed char
+    base.b = 0x1234
+
+    arr3 = base * 3
+    assert isinstance(arr3, DWARFArrayCrafter)
+    assert len(arr3) == 3
+    assert arr3[0].a.value == 0x42
+    assert arr3[2].b.value == 0x1234
+
+    assert len(2 * base) == 2           # __rmul__
+    assert len(base * 0) == 0           # zero gives empty
+
+    with pytest.raises(ValueError):
+        base * -1
+
+    # copies are independent
+    arr3[0].a = 0x11
+    assert arr3[1].a.value == 0x42
+
+
+def test_crafter_iadd_struct(headers):
+    x = headers.craft('Basic')
+    y = headers.craft('Basic')
+    x.a = 0x10
+    y.a = 0x20
+    x += y
+    assert isinstance(x, DWARFArrayCrafter)
+    assert len(x) == 2
+    assert x[0].a.value == 0x10
+    assert x[1].a.value == 0x20
+
+
+def test_crafter_radd(headers):
+    # numeric __radd__: int + field
+    fb = headers.craft('FinalBoss')
+    fb.current_state = 5
+    assert 10 + fb.current_state == 15
+
+    # struct __radd__ (direct call, mirrors subclass-priority rule)
+    a = headers.craft('Basic')
+    b = headers.craft('Basic')
+    a.a = 0x33
+    b.a = 0x44
+    result = b.__radd__(a)   # other=a first, self=b second
+    assert isinstance(result, DWARFArrayCrafter)
+    assert len(result) == 2
+    assert result[0].a.value == 0x33
+    assert result[1].a.value == 0x44
+
+    with pytest.raises(TypeError):
+        a.__radd__(headers.craft('FinalBoss'))
+
+
+# ============================================================
+# DWARFArrayCrafter list-like interface
+# ============================================================
+
+def test_arraycrafter_contains():
+    ac = C64.craft('int[5]')
+    ac[2] = 42
+    assert 42 in ac
+    assert 0 in ac
+    assert 99 not in ac
+
+    # 2-D deep scan
+    grid = C64.craft('int[3][3]')
+    grid[1][2] = 777
+    assert 777 in grid
+    assert 999 not in grid
+
+    # row match via list
+    grid2 = C64.craft('int[3][3]')
+    grid2[2] = [10, 20, 30]
+    assert [10, 20, 30] in grid2
+    assert [10, 20, 31] not in grid2
+
+
+def test_arraycrafter_eq():
+    eq1 = C64.craft('int[3]')
+    eq1[0] = 1; eq1[1] = 2; eq1[2] = 3
+
+    assert eq1 == [1, 2, 3]
+    assert not (eq1 == [1, 2, 4])
+    assert eq1 != [1, 2, 4]
+
+    eq2 = C64.craft('int[3]')
+    eq2[0] = 1; eq2[1] = 2; eq2[2] = 3
+    assert eq1 == eq2
+    eq2[0] = 99
+    assert eq1 != eq2
+
+    grid = C64.craft('int[2][2]')
+    grid[0] = [1, 2]; grid[1] = [3, 4]
+    assert grid == [[1, 2], [3, 4]]
+    assert not (grid == [[1, 2], [3, 5]])
+
+
+def test_arraycrafter_add():
+    a1 = C64.craft('int[3]')
+    a1[0] = 10; a1[1] = 20; a1[2] = 30
+    a2 = C64.craft('int[2]')
+    a2[0] = 40; a2[1] = 50
+    a3 = a1 + a2
+    assert len(a3) == 5
+    assert a3 == [10, 20, 30, 40, 50]
+    a3[0] = 99
+    assert a1[0].value == 10   # independent
+    assert a2[0].value == 40
+
+
+def test_arraycrafter_iadd():
+    ia = C64.craft('int[2]')
+    ib = C64.craft('int[2]')
+    ia[0] = 1; ia[1] = 2
+    ib[0] = 3; ib[1] = 4
+    ia += ib
+    assert len(ia) == 4
+    assert ia == [1, 2, 3, 4]
+
+
+def test_arraycrafter_add_type_mismatch():
+    with pytest.raises(TypeError):
+        C64.craft('int[2]') + C64.craft('char[2]')
+
+
+def test_arraycrafter_mul():
+    m = C64.craft('int[3]')
+    m[0] = 7; m[1] = 8; m[2] = 9
+    rep = m * 3
+    assert len(rep) == 9
+    assert rep == [7, 8, 9, 7, 8, 9, 7, 8, 9]
+    rep[0] = 99
+    assert rep[3].value == 7   # independent copies
+
+
+def test_arraycrafter_rmul():
+    r = C64.craft('int[2]')
+    r[0] = 5; r[1] = 6
+    rep = 4 * r
+    assert len(rep) == 8
+    assert rep == [5, 6, 5, 6, 5, 6, 5, 6]
+
+
+def test_arraycrafter_mul_zero():
+    assert len(C64.craft('int[4]') * 0) == 0
+
+
+def test_arraycrafter_index_1d():
+    idx = C64.craft('int[5]')
+    idx[0] = 10; idx[1] = 20; idx[2] = 10; idx[3] = 30; idx[4] = 20
+    assert idx.index(10) == 0
+    assert idx.index(20) == 1
+    assert idx.index(30) == 3
+    assert idx.index(10, 1) == 2
+    assert idx.index(20, 2, 5) == 4
+    with pytest.raises(ValueError):
+        idx.index(99)
+
+
+def test_arraycrafter_index_2d():
+    ig = C64.craft('int[4][2]')
+    ig[0] = [1, 2]; ig[1] = [3, 4]; ig[2] = [1, 2]; ig[3] = [5, 6]
+    assert ig.index([1, 2]) == 0
+    assert ig.index([1, 2], 1) == 2
+    assert ig.index([3, 4]) == 1
+
+
+def test_arraycrafter_count_1d():
+    cnt = C64.craft('int[6]')
+    cnt[0] = 5; cnt[1] = 3; cnt[2] = 5; cnt[3] = 5; cnt[4] = 0; cnt[5] = 3
+    assert cnt.count(5) == 3
+    assert cnt.count(3) == 2
+    assert cnt.count(0) == 1
+    assert cnt.count(99) == 0
+
+
+def test_arraycrafter_count_2d():
+    cg = C64.craft('int[4][2]')
+    cg[0] = [1, 2]; cg[1] = [3, 4]; cg[2] = [1, 2]; cg[3] = [1, 2]
+    assert cg.count([1, 2]) == 3
+    assert cg.count([3, 4]) == 1
+    assert cg.count([0, 0]) == 0
+
+
+def test_arraycrafter_slice():
+    sl = C64.craft('int[6]')
+    for i in range(6):
+        sl[i] = i * 10
+    sliced = sl[2:5]
+    assert isinstance(sliced, list) and len(sliced) == 3
+    assert [x.value for x in sliced] == [20, 30, 40]
+
+
+def test_arraycrafter_slice_assignment():
+    sa = C64.craft('int[5]')
+    sa[1:4] = [11, 22, 33]
+    assert [sa[i].value for i in range(5)] == [0, 11, 22, 33, 0]
+
+
+def test_arraycrafter_repr():
+    arr = C64.craft('int[3][4]')
+    r = repr(arr)
+    assert 'int' in r and '3' in r and '4' in r
+
+
+# ============================================================
+# C64 built-in type sizes
+# ============================================================
+
+def test_c64_stdint_types():
+    assert C64.sizeof('uint64_t') == 8
+    assert C64.sizeof('uint32_t') == 4
+    assert C64.sizeof('uint8_t') == 1
+    assert C64.sizeof('int64_t') == 8
+    assert C64.sizeof('size_t') == 8
+    assert C64.sizeof('ptrdiff_t') == 8
