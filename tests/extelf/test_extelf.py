@@ -18,7 +18,8 @@ from pwnlib.util.packing import p64
 from doglib.extelf import CHeader, DWARFAddress, DWARFArrayCrafter, C64
 
 # ============================================================
-# Integration: solve the compiled challenge binary (levels 1–10)
+# Integration: solve a mini-ctf challenge to ensure the library
+# is consistent with C memory layouts
 # ============================================================
 
 def test_challenge_solve(headers, chal_elf):
@@ -1444,6 +1445,126 @@ typedef struct outer { inner items; int pad; } outer;
     m['items']['copy'] = 0x2222
     assert m['items']['value'].value == 0x1111
     assert m['items']['copy'].value == 0x2222
+
+
+# ============================================================
+# Dot-path type navigation: sizeof / craft / describe / cast
+# ============================================================
+
+def test_sizeof_dotpath_struct_field(headers):
+    """sizeof('BossFight.u') returns the size of the UnionMadness member."""
+    # 'u' in BossFight is of type UnionMadness; verify it matches standalone sizeof
+    assert headers.sizeof('BossFight.u') == headers.sizeof('UnionMadness')
+
+
+def test_sizeof_dotpath_primitive_field(headers):
+    """sizeof('FinalBoss.negative_val') returns 2 (short)."""
+    assert headers.sizeof('FinalBoss.negative_val') == 2
+
+
+def test_sizeof_dotpath_array_field(headers):
+    """sizeof('FinalBoss.matrix') returns total bytes of the array."""
+    # int matrix[2][3] -> 2 * 3 * 4 = 24 bytes
+    assert headers.sizeof('FinalBoss.matrix') == 24
+
+
+def test_sizeof_dotpath_deep(headers):
+    """sizeof('BossFight.u.data.coords') returns size of coords struct."""
+    assert headers.sizeof('BossFight.u.data.coords') == headers.sizeof('BossFight.u.data.coords')
+    # coords has two ints: 8 bytes
+    assert headers.sizeof('BossFight.u.data.coords') == 8
+
+
+def test_sizeof_dotpath_invalid_base(headers):
+    """sizeof('NoSuchType.field') raises ValueError."""
+    with pytest.raises(ValueError, match="not found"):
+        headers.sizeof('NoSuchType.field')
+
+
+def test_sizeof_dotpath_invalid_field(headers):
+    """sizeof('Basic.nonexistent') raises ValueError."""
+    with pytest.raises(ValueError, match="not found"):
+        headers.sizeof('Basic.nonexistent')
+
+
+def test_craft_dotpath_struct_field(headers):
+    """craft('BossFight.u') creates a crafter for UnionMadness."""
+    m = headers.craft('BossFight.u')
+    assert len(bytes(m)) == headers.sizeof('UnionMadness')
+
+
+def test_craft_dotpath_assigns_correctly(headers):
+    """craft('BossFight.u') crafter supports normal field writes."""
+    m = headers.craft('BossFight.u')
+    m.type = 0x1234
+    assert m.type.value == 0x1234
+
+
+def test_craft_dotpath_primitive_field(headers):
+    """craft('FinalBoss.negative_val') creates a 2-byte crafter."""
+    m = headers.craft('FinalBoss.negative_val')
+    assert len(bytes(m)) == 2
+
+
+def test_craft_dotpath_with_array_suffix(headers):
+    """craft('Basic.b[3]') creates an array-crafter for 3 ints."""
+    # 'b' in Basic is an int
+    arr = headers.craft('Basic.b[3]')
+    arr[0] = 10
+    arr[1] = 20
+    arr[2] = 30
+    import struct as _struct
+    vals = _struct.unpack('<iii', bytes(arr))
+    assert vals == (10, 20, 30)
+
+
+def test_describe_dotpath(headers, capsys):
+    """describe('BossFight.u') prints layout for UnionMadness, not BossFight."""
+    headers.describe('BossFight.u')
+    out = capsys.readouterr().out
+    # Header line uses the full dot-path as the label
+    assert 'BossFight.u' in out
+    assert 'union' in out
+    # UnionMadness fields: type, data
+    assert 'type' in out
+    assert 'data' in out
+    # Should NOT show BossFight-specific fields like 'b' (the Basic array)
+    # The rows should only contain UnionMadness members
+    lines = [l for l in out.splitlines() if '0x' in l]
+    field_names = {l.split()[-1] for l in lines}
+    assert 'b' not in field_names, f"BossFight field 'b' leaked into describe output: {out}"
+
+
+def test_describe_dotpath_invalid(headers):
+    """describe on a primitive field raises ValueError (not a struct/union)."""
+    with pytest.raises(ValueError):
+        headers.describe('FinalBoss.negative_val')
+
+
+def test_cast_dotpath_offset_adjustment(headers):
+    """cast('BossFight.u', base_addr) returns an address offset by the field's position."""
+    # BossFight: b[2] is two Basic structs. Basic has (char a, int b, short c).
+    # sizeof(Basic) - need to account for padding.
+    basic_size = headers.sizeof('Basic')
+    u_offset = headers.offsetof('BossFight', 'u')
+    base = 0x10000
+    result = headers.cast('BossFight.u', base)
+    assert int(result) == base + u_offset
+
+
+def test_cast_dotpath_deep_field(headers):
+    """cast('BossFight.u.data.raw', base_addr) adjusts for the nested offset."""
+    base = 0x20000
+    raw_offset = headers.offsetof('BossFight', 'u.data.raw')
+    result = headers.cast('BossFight.u.data.raw', base)
+    assert int(result) == base + raw_offset
+
+
+def test_cast_dotpath_no_dotpath_unchanged(headers):
+    """cast without a dot-path still returns address unchanged (regression)."""
+    base = 0x30000
+    result = headers.cast('Basic', base)
+    assert int(result) == base
 
 
 # ============================================================

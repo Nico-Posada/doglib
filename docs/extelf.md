@@ -448,5 +448,4 @@ DWARF parsing results and compiled CHeader ELFs are cached to disk under `~/.cac
 
 - **Pointers cannot be dereferenced** -- `sym_obj['arena'].bins[3].fd` gives you the *address* of `fd`, not its value. You must read memory manually in your exploit to follow pointers.
 - **Bit-fields** are detected and produce a warning but are not fully supported for read/write operations.
-- **`.value` property** shadows any struct field literally named `value`.
 - **Flexible array members** (`char data[]`) have zero size and cannot be crafted directly.

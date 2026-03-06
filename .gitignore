@@ -12,3 +12,4 @@ wheels/
 # my own stuff
 garbage/
 .cursor/
+.gdb_history

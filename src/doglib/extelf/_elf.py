@@ -450,30 +450,81 @@ class ExtendedELF(ELF):
             }, f)
         self._dwarf_parsed = True
 
-    def _get_type_die(self, type_name):
-        """Look up a type by name and return its DIE. Raises ValueError if not found."""
+    def _resolve_dotpath_die(self, type_name):
+        """
+        Resolve a type name that may contain a dot-separated field path.
+
+        Returns (field_offset, type_die) where:
+          - field_offset is the byte offset of the named field within the
+            top-level type (0 when no dot-path is given).
+          - type_die is the DWARF DIE for the resolved type.
+
+        Examples:
+          '_IO_FILE_plus'          -> (0,  die for _IO_FILE_plus)
+          '_IO_FILE_plus.file'     -> (0,  die for FILE, the type of the
+                                         'file' member)
+          'BossFight.b[1].c'      -> (offset, die for short)
+        """
         self._build_dwarf_cache()
-        type_die_offset = self._resolve_type_name(type_name)
-        if type_die_offset is None:
-            raise ValueError(f"Type '{type_name}' not found in DWARF info.")
-        return self._get_dwarfinfo().get_DIE_from_refaddr(type_die_offset)
+        dot = type_name.find('.')
+        if dot == -1:
+            offset = self._resolve_type_name(type_name)
+            if offset is None:
+                raise ValueError(f"Type '{type_name}' not found in DWARF info.")
+            return 0, self._get_dwarfinfo().get_DIE_from_refaddr(offset)
+
+        base_name = type_name[:dot]
+        field_path = type_name[dot + 1:]
+
+        base_offset = self._resolve_type_name(base_name)
+        if base_offset is None:
+            raise ValueError(f"Type '{base_name}' not found in DWARF info.")
+        base_die = self._get_dwarfinfo().get_DIE_from_refaddr(base_offset)
+
+        tokens = self._tokenize_path(field_path)
+        try:
+            field_offset, final_die = self._walk_field_path(base_die, tokens)
+        except ValueError as e:
+            raise ValueError(f"In type path '{type_name}': {e}") from e
+
+        return field_offset, final_die
+
+    def _get_type_die(self, type_name):
+        """
+        Look up a type by name (supporting dot-path navigation) and return its DIE.
+        Raises ValueError if not found.
+        """
+        _, die = self._resolve_dotpath_die(type_name)
+        return die
 
     def cast(self, type_name, address, count=None):
         """
         Cast an arbitrary memory address to a DWARF C-type object.
-        Supports array syntax and pointer syntax in the type name.
+        Supports array, pointer, and dot-path syntax in the type name.
+
+        When a dot-path is given (e.g. 'Foo.bar'), *address* is treated as the
+        base address of the top-level type (Foo) and the field offset is added
+        automatically.  The returned object reflects the type of the named field.
 
         Example:
             libc.cast('malloc_chunk', 0x55555555b000).fd
             libc.cast('Bar', arr_addr, count=64)[3].field
             libc.cast('int[4][8]', matrix_addr)[1][2]
             libc.cast('int *', heap_base)[520292]
+            libc.cast('_IO_FILE_plus.file', vtable_addr)  # -> DWARFAddress<FILE>
         """
         self._build_dwarf_cache()
         base_name, parsed_dims, ptr_depth = self._parse_type_string(type_name)
-        type_die_offset = self._resolve_type_name(base_name)
-        if type_die_offset is None:
-            raise ValueError(f"Struct/Type '{base_name}' not found in DWARF info.")
+        # _resolve_dotpath_die handles 'Foo.bar.baz' paths; for pointer types
+        # the offset is always 0 (pointer itself sits at the given address).
+        if ptr_depth > 0:
+            field_offset = 0
+            type_die_offset = self._resolve_type_name(base_name)
+            if type_die_offset is None:
+                raise ValueError(f"Struct/Type '{base_name}' not found in DWARF info.")
+        else:
+            field_offset, field_die = self._resolve_dotpath_die(base_name)
+            type_die_offset = field_die.offset
         if ptr_depth > 0:
             if ptr_depth > 1:
                 raise ValueError(
@@ -481,18 +532,19 @@ class ExtendedELF(ELF):
                     "Use 'unsigned long *' to treat as an array of pointer-sized values."
                 )
             return DWARFArray(address, self, type_die_offset, (None,))
+        effective_addr = address + field_offset
         dims = parsed_dims
         if dims is None and count is not None:
             dims = count if isinstance(count, tuple) else (count,)
         if dims is not None:
-            return DWARFArray(address, self, type_die_offset, dims)
-        return DWARFAddress(address, self, type_die_offset)
+            return DWARFArray(effective_addr, self, type_die_offset, dims)
+        return DWARFAddress(effective_addr, self, type_die_offset)
 
     def craft(self, type_name, count=None, pad=0):
         """
         Creates a zeroed byte-backed structure for assigning C-fields dynamically.
         Use bytes(obj) to extract the raw crafted payload.
-        Supports array syntax: craft('Bar[64]') or craft('Bar', count=64).
+        Supports array, pointer, and dot-path syntax in the type name.
         Pass pad=N to add N extra bytes for intentional OOB writes.
 
         Example:
@@ -504,6 +556,9 @@ class ExtendedELF(ELF):
             arr[1][2].field = 42
             bytes(arr)
 
+            # Craft using a field type resolved from a parent struct
+            headers.craft('BossFight.u')   # -> DWARFCrafter for UnionMadness
+
             # OOB-capable crafting for exploitation
             arr = headers.craft('int[5][6]', pad=64)
             arr[4][6] = 0xdeadbeef  # one past the end, no warning
@@ -512,9 +567,8 @@ class ExtendedELF(ELF):
         base_name, parsed_dims, ptr_depth = self._parse_type_string(type_name)
         if ptr_depth > 0:
             raise ValueError("Cannot craft a pointer type. Use craft('type[N]') for arrays.")
-        type_die_offset = self._resolve_type_name(base_name)
-        if type_die_offset is None:
-            raise ValueError(f"Struct/Type '{base_name}' not found in DWARF info.")
+        _, field_die = self._resolve_dotpath_die(base_name)
+        type_die_offset = field_die.offset
         dims = parsed_dims
         if dims is None and count is not None:
             dims = count if isinstance(count, tuple) else (count,)
@@ -563,9 +617,10 @@ class ExtendedELF(ELF):
     def sizeof(self, type_name):
         """
         Get the byte size of a named type.
-        Supports array and pointer syntax.
+        Supports array, pointer, and dot-path syntax.
         Example: headers.sizeof('int[100]') -> 400
                  headers.sizeof('int *') -> 8 (on 64-bit)
+                 headers.sizeof('BossFight.u') -> size of the 'u' member's type
         """
         base_name, parsed_dims, ptr_depth = self._parse_type_string(type_name)
         if ptr_depth > 0:
@@ -607,9 +662,11 @@ class ExtendedELF(ELF):
         """
         Print the memory layout of a struct/union type as a formatted table.
         Recursively inlines anonymous struct/union members.
+        Supports dot-path syntax to describe a nested field's type directly.
 
         Example:
             headers.describe('FinalBoss')
+            headers.describe('BossFight.u')  # layout of the 'u' member's type
         """
         die = self._get_type_die(type_name)
         unwrapped = self._unwrap_type(die)

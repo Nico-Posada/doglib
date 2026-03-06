@@ -11,9 +11,6 @@ class DWARFCrafter:
     A mutable byte-array wrapper that allows C-style struct member assignments.
     Supports multi-dimensional array indexing, slice assignment, and sub-struct assignment.
     Calling bytes(obj) yields the fully crafted memory structure.
-
-    The .value property reads back the current value for primitive fields.
-    Note: .value shadows any struct field literally named 'value'.
     """
     def __init__(self, elf, type_die_offset, backing=None, offset=0, subrange_start=0):
         super().__setattr__('_elf', elf)
