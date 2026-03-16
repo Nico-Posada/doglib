@@ -2,6 +2,55 @@
 
 DWARF-powered C struct toolkit for pwntools. Craft, parse, and inspect C structures using debug info or raw `.h` files.
 
+---
+
+## Showcase
+
+```python
+from doglib.extelf import ExtendedELF, CHeader, C64
+
+
+libc = ExtendedELF('./libc.so.6') # load types from a binary with debug symbols..
+hdrs = CHeader('my_structs.h') # or compile a .h on the fly!
+C64 # don't have anything? this has some useful types ready
+
+# using any of these, you can...
+# - craft the raw bytes of arbitrary structs
+b = libc.craft("tcache_perthread_struct")
+b.counts[10] = 1; b.entries[10] = 0x123456789
+bytes(b) # correct layout!
+
+# - get important info on structs
+hdrs.sizeof('malloc_chunk')           # 0x30
+hdrs.offsetof('malloc_chunk', 'fd')   # 0x10 
+
+# - parse leaked bytes into a struct
+chunk = libc.parse('malloc_chunk', io.recvn(0x30))
+print(chunk.fd)
+
+# - view symbols as structs
+arena = libc.sym_obj['main_arena'].bins[3].fd
+
+# - cast addresses as structs
+ptr = libc.cast('malloc_chunk', 0x55555555b000)
+ptr.fd # 0x55555555b010
+
+# - work with enums
+hdrs.enum('State').RUNNING # correct enum value
+
+# - work with complex arrays / types
+j = C64.craft("float[3][3]")
+j.fill(3.14) # now all indices are 3.14
+j[1][1] += 9
+j[2] = [3.0,4.0,5.0]
+bytes(j) # correct bytes!
+
+# .... and probably even more i'm forgetting
+
+```
+
+---
+
 ## Setup
 
 ```python

@@ -105,3 +105,13 @@ typedef struct _IO_FILE_plus {
     FILE file;
     const struct _IO_jump_t *vtable;
 } _ct_IO_FILE_plus;
+
+typedef struct malloc_chunk {
+    size_t      mchunk_prev_size; 
+    size_t      mchunk_size;  
+    void* fd;   
+    void* bk;
+    void* fd_nextsize;
+    void* bk_nextsize;
+} _ct_malloc_chunk;
+  

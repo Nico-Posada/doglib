@@ -75,6 +75,12 @@ def setcontext(regs, addr):
 # tldr is stdin filestream has a bunch of scratch space behind it
 # so we can write a ucontext_t there then fsop to setcontext
 # HOWEVER only happens on exit. if this is a problem you can fsop stdout to call exit.
+"""
+better solution:
+- write to standard output
+on modern libc stderr is always behind it (so write ur payload ther)
+the important things infront are the 'stdout'/'stderr'/'stdin' pointers but you can just spray those with &stdout 
+"""
 def house_of_context(libc,**kwargs) -> (int, bytes):
     assert context.bits == 64, "only support amd64!"
     

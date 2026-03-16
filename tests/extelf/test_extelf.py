@@ -12,10 +12,11 @@ import struct
 import tempfile
 
 import pytest
+from pwnlib.exception import PwnlibException
 from pwnlib.util.cyclic import cyclic as pwn_cyclic
 from pwnlib.util.packing import p64
 
-from doglib.extelf import CHeader, DWARFAddress, DWARFArrayCrafter, C64
+from doglib.extelf import CHeader, CInline, DWARFAddress, DWARFArrayCrafter, C64
 
 # ============================================================
 # Integration: solve a mini-ctf challenge to ensure the library
@@ -999,17 +1000,14 @@ def test_true_dunder_attr(headers):
 # C struct fields with dunder-like names (e.g. __finish)
 # ============================================================
 
-def test_dunder_struct_fields(tmp_path):
-    hdr_src = """\
+def test_dunder_struct_fields():
+    j = CInline("""\
 typedef struct testing {
     unsigned long long __dummy;
     unsigned long long __dummy2;
     unsigned long long __finish;
 } testing;
-"""
-    header_file = tmp_path / "testing.h"
-    header_file.write_text(hdr_src)
-    j = CHeader(str(header_file))
+""")
     m = j.craft('testing')
 
     m.__finish = 0x1234568
@@ -1343,16 +1341,14 @@ typedef struct shadowed {
 """
 
 
-def _make_shadowed(tmp_path):
-    """Compile _SHADOWED_H and return a CHeader instance."""
-    hf = tmp_path / "shadowed.h"
-    hf.write_text(_SHADOWED_H)
-    return CHeader(str(hf))
+def _make_shadowed():
+    """Compile _SHADOWED_H and return a CInline instance."""
+    return CInline(_SHADOWED_H)
 
 
-def test_string_key_read_shadowed_by_property(tmp_path):
+def test_string_key_read_shadowed_by_property():
     """crafter['value'] reaches the C field 'value', not the .value property."""
-    j = _make_shadowed(tmp_path)
+    j = _make_shadowed()
     m = j.craft('shadowed')
     # Write through normal attribute path (works because 'value' is a property,
     # not blocked by __setattr__).  Then read back via bracket syntax.
@@ -1361,9 +1357,9 @@ def test_string_key_read_shadowed_by_property(tmp_path):
     assert result.value == 42, f"Expected 42, got {result.value}"
 
 
-def test_string_key_read_shadowed_by_method(tmp_path):
+def test_string_key_read_shadowed_by_method():
     """crafter['items'] / crafter['copy'] reach C fields, not the Python methods."""
-    j = _make_shadowed(tmp_path)
+    j = _make_shadowed()
     m = j.craft('shadowed')
     m['items'] = 100
     m['copy'] = 200
@@ -1371,9 +1367,9 @@ def test_string_key_read_shadowed_by_method(tmp_path):
     assert m['copy'].value == 200
 
 
-def test_string_key_read_true_dunder_field(tmp_path):
+def test_string_key_read_true_dunder_field():
     """crafter['__foo__'] reaches a C field whose name looks like a dunder."""
-    j = _make_shadowed(tmp_path)
+    j = _make_shadowed()
     m = j.craft('shadowed')
     m['__init__'] = 0xABCD
     m['__foo__'] = 0x1234
@@ -1381,9 +1377,9 @@ def test_string_key_read_true_dunder_field(tmp_path):
     assert m['__foo__'].value == 0x1234
 
 
-def test_string_key_write_visible_in_bytes(tmp_path):
+def test_string_key_write_visible_in_bytes():
     """Writes via crafter['field'] = v are reflected in bytes(crafter)."""
-    j = _make_shadowed(tmp_path)
+    j = _make_shadowed()
     m = j.craft('shadowed')
     m['value'] = 0xDEAD
     m['__foo__'] = 0xBEEF
@@ -1395,9 +1391,9 @@ def test_string_key_write_visible_in_bytes(tmp_path):
     assert fields[4] == 0xBEEF, f"'__foo__' field: {hex(fields[4])}"
 
 
-def test_string_key_not_found_raises_key_error(tmp_path):
+def test_string_key_not_found_raises_key_error():
     """A non-existent field name raises KeyError, not AttributeError."""
-    j = _make_shadowed(tmp_path)
+    j = _make_shadowed()
     m = j.craft('shadowed')
     with pytest.raises(KeyError):
         _ = m['does_not_exist']
@@ -1405,9 +1401,9 @@ def test_string_key_not_found_raises_key_error(tmp_path):
         m['does_not_exist'] = 99
 
 
-def test_string_key_normal_attr_access_unaffected(tmp_path):
+def test_string_key_normal_attr_access_unaffected():
     """Adding string-key support must not break ordinary attribute access."""
-    j = _make_shadowed(tmp_path)
+    j = _make_shadowed()
     m = j.craft('shadowed')
     # 'value' property still works for fields that DON'T collide
     m['items'] = 55
@@ -1416,12 +1412,9 @@ def test_string_key_normal_attr_access_unaffected(tmp_path):
     fb = CHeader.__new__(CHeader)   # we just need the fixture headers here
 
 
-def test_string_key_and_dot_notation_are_equivalent(tmp_path):
+def test_string_key_and_dot_notation_are_equivalent():
     """For an ordinary field name, crafter['x'] and crafter.x return the same data."""
-    # Use 'Basic' from the session headers via a fresh CHeader with an ordinary field.
-    hf = tmp_path / "simple.h"
-    hf.write_text("typedef struct simple { int x; int y; } simple;")
-    j = CHeader(str(hf))
+    j = CInline("typedef struct simple { int x; int y; } simple;")
     m = j.craft('simple')
     m.x = 77
     assert m['x'].value == 77       # bracket
@@ -1430,14 +1423,12 @@ def test_string_key_and_dot_notation_are_equivalent(tmp_path):
     assert m.y.value == 88          # dot sees the bracket write
 
 
-def test_string_key_chaining(tmp_path):
+def test_string_key_chaining():
     """crafter['field'] returns a DWARFCrafter that supports further field access."""
-    hf = tmp_path / "nested.h"
-    hf.write_text("""\
+    j = CInline("""\
 typedef struct inner { int value; int copy; } inner;
 typedef struct outer { inner items; int pad; } outer;
 """)
-    j = CHeader(str(hf))
     m = j.craft('outer')
     # 'items' on outer is a C field; on the returned inner crafter 'value'/'copy'
     # are C fields too — use bracket access all the way down.
@@ -1578,3 +1569,83 @@ def test_c64_stdint_types():
     assert C64.sizeof('int64_t') == 8
     assert C64.sizeof('size_t') == 8
     assert C64.sizeof('ptrdiff_t') == 8
+
+
+# ============================================================
+# Additional coverage: API edges and documented setup features
+# ============================================================
+
+def test_resolve_field_symbol_base(chal_elf):
+    assert chal_elf.resolve_field('target_sym') == chal_elf.symbols['target_sym']
+
+
+def test_resolve_field_with_explicit_struct_name(chal_elf):
+    expected = int(chal_elf.sym_obj['target_sym'].arr[2].ptr)
+    assert chal_elf.resolve_field('target_sym', 'arr[2].ptr', struct_name='GlobalTest') == expected
+
+
+def test_resolve_field_invalid_path_raises(chal_elf):
+    with pytest.raises(PwnlibException):
+        chal_elf.resolve_field('target_sym', 'arr[2].does_not_exist')
+
+
+def test_resolve_field_missing_symbol_raises(chal_elf):
+    with pytest.raises(PwnlibException):
+        chal_elf.resolve_field('does_not_exist', 'arr[0]')
+
+
+def test_resolve_type_alias_short(headers):
+    assert headers.resolve_type('short') == 'short int'
+
+
+def test_cheader_include_dirs(tmp_path):
+    inc = tmp_path / 'include'
+    inc.mkdir()
+    (inc / 'inner.h').write_text(
+        "typedef struct inner {\n"
+        "    int field_value;\n"
+        "} inner;\n"
+    )
+    (tmp_path / 'outer.h').write_text(
+        '#include "inner.h"\n'
+        "typedef struct outer {\n"
+        "    inner field;\n"
+        "} outer;\n"
+    )
+
+    hdr = CHeader(str(tmp_path / 'outer.h'), include_dirs=[str(inc)])
+    outer = hdr.craft('outer')
+    outer.field.field_value = 7
+
+    assert outer.field.field_value.value == 7
+
+
+def test_cheader_missing_file_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        CHeader(str(tmp_path / 'missing.h'))
+
+
+def test_cheader_invalid_header_raises():
+    with pytest.raises(PwnlibException):
+        CInline(
+            "typedef struct broken {\n"
+            "    int value;\n"
+            "    @\n"
+            "} broken;\n"
+        )
+
+
+def test_bool_base_type_round_trip():
+    hdr = CInline(
+        "typedef struct boolish {\n"
+        "    _Bool flag;\n"
+        "} boolish;\n"
+    )
+    obj = hdr.craft('boolish')
+
+    obj.flag = 0
+    assert obj.flag.value is False
+
+    obj.flag = 1
+    assert obj.flag.value is True
+

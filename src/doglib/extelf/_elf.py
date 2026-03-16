@@ -818,3 +818,32 @@ class CHeader(ExtendedELF):
 
     # remove annoying pwntools warning
     def _populate_got(self): pass
+
+
+class CInline(CHeader):
+    """
+    Like CHeader but accepts C source code directly as a string instead of a
+    file path. Types are compiled to DWARF on the fly and cached by content
+    hash, so repeated calls with identical source never recompile.
+
+    Example:
+        types = CInline('''
+            typedef struct chunk {
+                size_t prev_size;
+                size_t size;
+                struct chunk *fd, *bk;
+            } chunk;
+        ''')
+        c = types.craft('chunk')
+        c.size = 0x21
+
+    # 32-bit layout
+    types32 = CInline('typedef struct foo { int x; } foo;', bits=32)
+    """
+    def __init__(self, source, bits=None, **kwargs):
+        import tempfile
+        src_bytes = source.encode() if isinstance(source, str) else bytes(source)
+        with tempfile.NamedTemporaryFile(suffix='.h', prefix='cinline_') as f:
+            f.write(src_bytes)
+            f.flush()
+            super().__init__(f.name, bits=bits, **kwargs)

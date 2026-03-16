@@ -13,3 +13,5 @@ wheels/
 garbage/
 .cursor/
 .gdb_history
+libc.so.6
+ld*.so*
