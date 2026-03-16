@@ -1,12 +1,12 @@
 # dogtools
-things i personally wished were in pwntools but aren't
+things i personally wished were in pwntools but aren't  
 code is a mix of GPT slop and my own stuff
 
 ## misc
 random stuff. worth reading yourself.
 
 ## io_file
-advanced file stream generator, useful for quick FSOP
+advanced file stream generator, useful for quick FSOP  
 stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/pwncli/utils/io_file.py) with a few personal additions at the bottom
 
 ## heap
@@ -22,7 +22,8 @@ stuff to make ropping faster
 only notable function right now is `quickrop` which sets up a system('/bin/sh') chain
 
 ## extelf
-very useful claude-slopped extension to pwntools `ELF`. work with structs in python
+very useful claude-slopped extension to pwntools `ELF`.  
+work with structs in python
 ```python
 libc = ExtendedELF('./libc.so.6')
 target_fd = libc.sym_obj['main_arena'].bins[3].fd # correct address of this field
@@ -48,13 +49,13 @@ j[1][1] # 0x21
 j[2] = [3,4,5]
 bytes(j) # b'\x18\x00\x00\x00\x18\x00\x00\x00.....'
 ```
-*warning*: this module is nearly 2000+ lines of AI code that i have not thoroughly reviewed.
-even on opus 4.6 i am still finding myself fixing simple issues. 
-but i am trying my best. there are over 129 test cases.
+*warning*: this module is nearly 2000+ lines of AI code that i have not thoroughly reviewed.  
+even on opus 4.6 i am still finding myself fixing simple issues.  
+but i am trying my best. 
 
 
 ## asm
-basic assembler/disassembler stuff because pwntools is ungodly slow
+basic assembler/disassembler stuff because pwntools is ungodly slow  
 `asm_x64`, `asm_x86`, `dis_x64`, etc etc
 
 ## muney
@@ -65,8 +66,7 @@ from doglib.muney import house_of_muney
 libc = ELF("./libc.so.6")
 payload = house_of_muney(libc,{
     'puts': libc.sym['system'],
-    '
-
+    'free': libc.sym['puts']
 })
 print(payload) # b'\x00\x00\x00\x00....'
 ```
