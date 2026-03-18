@@ -2,7 +2,6 @@ import os
 import re
 import json
 import hashlib
-import subprocess
 import struct
 from pwnlib.log import getLogger
 from pwnlib.elf.elf import ELF
@@ -17,8 +16,10 @@ except ImportError:
 log = getLogger(__name__)
 
 from ._address import DWARFAddress, DWARFArray
-from ._enum import DWARFEnum
+from ._constants import CACHEABLE_TAGS, STRUCT_TAGS, array_stride, dims_str, va_mask
 from ._crafter import DWARFCrafter, DWARFArrayCrafter
+from ._enum import DWARFEnum
+from ._resolver import DWARFResolver
 
 class _CVarAccessor:
     def __init__(self, elf):
@@ -54,6 +55,8 @@ class ExtendedELF(ELF):
     An extension of the pwntools ELF class that adds support for resolving
     complex C-struct offsets dynamically using DWARF debug information.
     """
+    _CACHE_VERSION = 4
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._dwarf_vars = {}
@@ -63,6 +66,16 @@ class ExtendedELF(ELF):
         self._dwarfinfo = None
 
         self.sym_obj = _CVarAccessor(self)
+        self._resolver = None
+
+    def _get_resolver(self):
+        """Lazy-build the DWARF resolver. Requires dwarfinfo to be available."""
+        if self._resolver is None:
+            dwarfinfo = self._get_dwarfinfo()
+            if dwarfinfo is None:
+                raise RuntimeError("No DWARF info available")
+            self._resolver = DWARFResolver(dwarfinfo, self.bits)
+        return self._resolver
 
     _BASE_TYPE_ALIASES = {
         'short': 'short int',
@@ -97,6 +110,7 @@ class ExtendedELF(ELF):
             dwarf_file.close()
             self._dwarf_file = None
         self._dwarfinfo = None
+        self._resolver = None
 
     def __del__(self):
         try:
@@ -120,202 +134,25 @@ class ExtendedELF(ELF):
         return self._dwarfinfo
 
     def _get_die_from_attr(self, die, attr_name):
-        """Helper to follow DWARF type references (e.g., DW_AT_type)."""
-        if attr_name not in die.attributes:
-            return None
-        attr = die.attributes[attr_name]
-        offset = attr.value
-
-        if attr.form in ('DW_FORM_ref1', 'DW_FORM_ref2', 'DW_FORM_ref4', 'DW_FORM_ref8', 'DW_FORM_ref_udata'):
-            offset += die.cu.cu_offset
-
-        return die.cu.dwarfinfo.get_DIE_from_refaddr(offset)
+        return self._get_resolver().get_die_from_attr(die, attr_name)
 
     def _unwrap_type(self, die):
-        """Strips away typedefs, const, volatile, restrict, and _Atomic modifiers."""
-        passthrough = (
-            'DW_TAG_typedef', 'DW_TAG_const_type', 'DW_TAG_volatile_type',
-            'DW_TAG_restrict_type', 'DW_TAG_atomic_type',
-        )
-        while die and die.tag in passthrough:
-            die = self._get_die_from_attr(die, 'DW_AT_type')
-        return die
-
-    def _decode_uleb128(self, data):
-        """Decode a ULEB128 value from a sequence of bytes."""
-        val, shift = 0, 0
-        for b in data:
-            val |= (b & 0x7f) << shift
-            if (b & 0x80) == 0:
-                break
-            shift += 7
-        return val
+        return self._get_resolver().unwrap_type(die)
 
     def _parse_member_offset(self, member_die):
-        """Parse DW_AT_data_member_location from a member DIE, handling various DWARF expression forms."""
-        if 'DW_AT_bit_size' in member_die.attributes or 'DW_AT_data_bit_offset' in member_die.attributes:
-            name = member_die.attributes.get('DW_AT_name')
-            fname = name.value.decode('utf-8') if name else '<anonymous>'
-            log.warning(f"Field '{fname}' is a bit-field. Bit-field access is not fully supported and may produce incorrect results.")
-
-        loc = member_die.attributes.get('DW_AT_data_member_location')
-        if not loc:
-            return 0
-
-        if isinstance(loc.value, int):
-            return loc.value
-
-        if isinstance(loc.value, (list, bytes)):
-            expr = list(loc.value)
-            if not expr:
-                return 0
-
-            op = expr[0]
-
-            if op == 0x23:  # DW_OP_plus_uconst
-                return self._decode_uleb128(expr[1:])
-
-            if op == 0x10:  # DW_OP_constu (often followed by DW_OP_plus)
-                return self._decode_uleb128(expr[1:])
-
-            if 0x30 <= op <= 0x4f:  # DW_OP_lit0 through DW_OP_lit31
-                return op - 0x30
-
-            if op == 0x08 and len(expr) >= 2:  # DW_OP_const1u
-                return expr[1]
-
-            if op == 0x0a and len(expr) >= 3:  # DW_OP_const2u
-                return expr[1] | (expr[2] << 8)
-
-            if op == 0x0c and len(expr) >= 5:  # DW_OP_const4u
-                return expr[1] | (expr[2] << 8) | (expr[3] << 16) | (expr[4] << 24)
-
-            log.warning(f"Unhandled DWARF location expression opcode: 0x{op:02x}")
-
-        return 0
+        return self._get_resolver().parse_member_offset(member_die)
 
     def _find_member(self, struct_die, name):
-        """
-        Find a member by name in a struct/union/class DIE. Recurses into:
-        - Anonymous struct/union members (C11 anonymous access patterns)
-        - Base classes via DW_TAG_inheritance (C++ inheritance)
-        Returns (offset, type_die) or None.
-        """
-        for child in struct_die.iter_children():
-            if child.tag == 'DW_TAG_member':
-                name_attr = child.attributes.get('DW_AT_name')
-                if name_attr and name_attr.value.decode('utf-8') == name:
-                    offset = self._parse_member_offset(child)
-                    type_die = self._get_die_from_attr(child, 'DW_AT_type')
-                    if not type_die:
-                        return None
-                    return (offset, type_die)
-
-                if not name_attr:
-                    anon_type = self._get_die_from_attr(child, 'DW_AT_type')
-                    if anon_type:
-                        anon_unwrapped = self._unwrap_type(anon_type)
-                        if anon_unwrapped and anon_unwrapped.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
-                            result = self._find_member(anon_unwrapped, name)
-                            if result:
-                                anon_offset = self._parse_member_offset(child)
-                                return (anon_offset + result[0], result[1])
-
-            elif child.tag == 'DW_TAG_inheritance':
-                base_type = self._get_die_from_attr(child, 'DW_AT_type')
-                if base_type:
-                    base_unwrapped = self._unwrap_type(base_type)
-                    if base_unwrapped:
-                        result = self._find_member(base_unwrapped, name)
-                        if result:
-                            base_offset = self._parse_member_offset(child)
-                            return (base_offset + result[0], result[1])
-
-        return None
+        return self._get_resolver().find_member(struct_die, name)
 
     def _get_array_subranges(self, array_die):
-        """Extract dimension sizes from a DWARF array type's subrange children."""
-        dims = []
-        for child in array_die.iter_children():
-            if child.tag == 'DW_TAG_subrange_type':
-                if 'DW_AT_count' in child.attributes:
-                    dims.append(child.attributes['DW_AT_count'].value)
-                elif 'DW_AT_upper_bound' in child.attributes:
-                    dims.append(child.attributes['DW_AT_upper_bound'].value + 1)
-        return dims
+        return self._get_resolver().get_array_subranges(array_die)
 
     def _get_byte_size(self, die, subrange_start=0):
-        """
-        Recursively determines the byte size of a DWARF type.
-        For multi-dimensional arrays, subrange_start controls which
-        dimensions are included in the size calculation.
-        """
-        die = self._unwrap_type(die)
-        if not die:
-            log.warning("Could not determine byte size for type (None die)")
-            return 0
-
-        if die.tag == 'DW_TAG_array_type':
-            elem_type = self._unwrap_type(self._get_die_from_attr(die, 'DW_AT_type'))
-            elem_size = self._get_byte_size(elem_type)
-            subranges = self._get_array_subranges(die)
-            relevant = subranges[subrange_start:]
-            if not relevant:
-                return 0
-            count = 1
-            for dim in relevant:
-                count *= dim
-            return elem_size * count
-
-        if 'DW_AT_byte_size' in die.attributes:
-            return die.attributes['DW_AT_byte_size'].value
-
-        if die.tag == 'DW_TAG_pointer_type':
-            return self.elfclass // 8
-
-        if die.tag == 'DW_TAG_enumeration_type':
-            return 4
-
-        log.warning(f"Could not determine byte size for DWARF tag {die.tag}")
-        return 0
+        return self._get_resolver().get_byte_size(die, subrange_start)
 
     def _get_type_name(self, die):
-        """Get a human-readable type name string from a DWARF DIE."""
-        if not die:
-            return 'void'
-
-        if die.tag == 'DW_TAG_typedef':
-            name = die.attributes.get('DW_AT_name')
-            if name:
-                return name.value.decode('utf-8')
-
-        die = self._unwrap_type(die)
-        if not die:
-            return 'void'
-
-        if die.tag == 'DW_TAG_base_type':
-            name = die.attributes.get('DW_AT_name')
-            return name.value.decode('utf-8') if name else 'unknown'
-
-        if die.tag == 'DW_TAG_pointer_type':
-            pointee = self._get_die_from_attr(die, 'DW_AT_type')
-            return self._get_type_name(pointee) + '*'
-
-        if die.tag == 'DW_TAG_array_type':
-            elem = self._get_die_from_attr(die, 'DW_AT_type')
-            dims = ''.join(f'[{d}]' for d in self._get_array_subranges(die))
-            return self._get_type_name(elem) + dims
-
-        if die.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
-            prefix = 'struct' if die.tag == 'DW_TAG_structure_type' else 'union'
-            name = die.attributes.get('DW_AT_name')
-            return f"{prefix} {name.value.decode('utf-8')}" if name else f"<anon {prefix}>"
-
-        if die.tag == 'DW_TAG_enumeration_type':
-            name = die.attributes.get('DW_AT_name')
-            return f"enum {name.value.decode('utf-8')}" if name else '<anon enum>'
-
-        return '?'
+        return self._get_resolver().get_type_name(die)
 
     @staticmethod
     def _parse_type_string(type_string):
@@ -371,30 +208,22 @@ class ExtendedELF(ELF):
                 if current_die.tag != 'DW_TAG_array_type':
                     raise ValueError(f"Expected array type for index '{token}', got {current_die.tag}")
 
-                subranges = self._get_array_subranges(current_die)
-                remaining = subranges[subrange_start:]
-
-                elem_type = self._unwrap_type(self._get_die_from_attr(current_die, 'DW_AT_type'))
-                elem_size = self._get_byte_size(elem_type)
-
-                stride = elem_size
-                for dim in remaining[1:]:
-                    stride *= dim
+                stride, elem_type, remaining_len = array_stride(self, current_die, subrange_start)
 
                 offset += token * stride
 
-                if len(remaining) <= 1:
+                if remaining_len <= 1:
                     current_die = elem_type
                     subrange_start = 0
                 else:
-                    subrange_start += 1
+                    subrange_start += 1  # advance to next dimension
             else:
                 subrange_start = 0
 
                 if current_die.tag == 'DW_TAG_array_type':
                     current_die = self._unwrap_type(self._get_die_from_attr(current_die, 'DW_AT_type'))
 
-                if current_die.tag not in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+                if current_die.tag not in STRUCT_TAGS:
                     raise ValueError(f"Expected struct/union for field '{token}', got {current_die.tag}")
 
                 result = self._find_member(current_die, token)
@@ -422,13 +251,11 @@ class ExtendedELF(ELF):
 
         cache_file = os.path.join(extelf_cache_dir, f"dwarf_{bid}.json")
 
-        _CACHE_VERSION = 4
-
         if os.path.exists(cache_file):
             try:
                 with open(cache_file, 'r') as f:
                     data = json.load(f)
-                if data.get('cache_version') != _CACHE_VERSION:
+                if data.get('cache_version') != self._CACHE_VERSION:
                     raise ValueError("stale cache version")
                 self._dwarf_vars = data.get('vars', {})
                 self._dwarf_types = data.get('types', {})
@@ -443,13 +270,7 @@ class ExtendedELF(ELF):
                 self._dwarf_vars, self._dwarf_types = _dwarf_parser_rs.parse_dwarf(self.path)
                 if not self._dwarf_vars and not self._dwarf_types:
                     raise ValueError("Rust DWARF parser returned an empty index")
-                with open(cache_file, 'w') as f:
-                    json.dump({
-                        'cache_version': _CACHE_VERSION,
-                        'vars': self._dwarf_vars,
-                        'types': self._dwarf_types,
-                    }, f)
-                self._dwarf_parsed = True
+                self._save_dwarf_cache(cache_file)
                 return
             except Exception as e:
                 log.warning(f"Rust DWARF parser failed ({e}), falling back to pyelftools")
@@ -462,14 +283,9 @@ class ExtendedELF(ELF):
             self._dwarf_parsed = True
             return
 
-        cacheable_tags = (
-            'DW_TAG_variable', 'DW_TAG_structure_type', 'DW_TAG_class_type',
-            'DW_TAG_union_type', 'DW_TAG_typedef', 'DW_TAG_enumeration_type',
-            'DW_TAG_base_type',
-        )
         for CU in dwarfinfo.iter_CUs():
             for die in CU.iter_DIEs():
-                if die.tag in cacheable_tags:
+                if die.tag in CACHEABLE_TAGS:
                     name_attr = die.attributes.get('DW_AT_name')
                     if name_attr:
                         name = name_attr.value.decode('utf-8', errors='ignore')
@@ -478,9 +294,13 @@ class ExtendedELF(ELF):
                         else:
                             self._dwarf_types[name] = die.offset
 
+        self._save_dwarf_cache(cache_file)
+
+    def _save_dwarf_cache(self, cache_file):
+        """Write the current DWARF vars/types cache to disk and mark as parsed."""
         with open(cache_file, 'w') as f:
             json.dump({
-                'cache_version': _CACHE_VERSION,
+                'cache_version': self._CACHE_VERSION,
                 'vars': self._dwarf_vars,
                 'types': self._dwarf_types,
             }, f)
@@ -691,8 +511,7 @@ class ExtendedELF(ELF):
         Example:
             base = headers.containerof('task_struct', 'tasks', list_entry_addr)
         """
-        mask = (1 << self.bits) - 1
-        return (member_addr - self.offsetof(type_name, field_path)) & mask
+        return (member_addr - self.offsetof(type_name, field_path)) & va_mask(self.bits)
 
     def describe(self, type_name):
         """
@@ -710,12 +529,12 @@ class ExtendedELF(ELF):
         array_suffix = ''
         if unwrapped and unwrapped.tag == 'DW_TAG_array_type':
             dims = self._get_array_subranges(unwrapped)
-            array_suffix = ''.join(f'[{d}]' for d in dims)
+            array_suffix = dims_str(dims)
             elem_die = self._get_die_from_attr(unwrapped, 'DW_AT_type')
             if elem_die:
                 unwrapped = self._unwrap_type(elem_die)
 
-        if not unwrapped or unwrapped.tag not in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        if not unwrapped or unwrapped.tag not in STRUCT_TAGS:
             raise ValueError(f"'{type_name}' is not a struct/union type.")
 
         total_size = self._get_byte_size(unwrapped)
@@ -744,7 +563,7 @@ class ExtendedELF(ELF):
 
             if not name_attr and member_type:
                 unwrapped = self._unwrap_type(member_type)
-                if unwrapped and unwrapped.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+                if unwrapped and unwrapped.tag in STRUCT_TAGS:
                     rows.extend(self._collect_describe_rows(unwrapped, offset))
                     continue
 
@@ -804,94 +623,4 @@ class ExtendedELF(ELF):
             log.error(str(e))
             return None
 
-        mask = (1 << self.bits) - 1
-        return (base_addr + offset) & mask
-
-
-class CHeader(ExtendedELF):
-    """
-    Takes a C header file, automatically compiles it into a temporary ELF
-    with DWARF symbols via GCC, and wraps it in an ExtendedELF interface.
-
-    Accepts optional include_dirs for headers that #include other files.
-    Pass bits=32 to compile for 32-bit targets. If not provided, uses
-    context.bits when the user has explicitly set context.arch or
-    context.bits, otherwise falls back to the host architecture.
-    """
-    def __init__(self, header_path, include_dirs=None, bits=None, **kwargs):
-        header_path = os.path.abspath(header_path)
-        if not os.path.exists(header_path):
-            raise FileNotFoundError(f"Header file not found: {header_path}")
-
-        with open(header_path, 'rb') as f:
-            header_data = f.read()
-
-        host_bits = struct.calcsize('P') * 8
-        if bits is None:
-            if 'bits' in context._tls:
-                bits = context.bits
-            else:
-                bits = host_bits
-
-        hash_input = header_data + str(bits).encode()
-        if include_dirs:
-            hash_input += b'|' + '|'.join(sorted(os.path.abspath(d) for d in include_dirs)).encode()
-        header_hash = hashlib.sha256(hash_input).hexdigest()[:16]
-
-        extelf_cache_dir = os.path.join(context.cache_dir, 'extelf_cache')
-        os.makedirs(extelf_cache_dir, exist_ok=True)
-
-        elf_path = os.path.join(extelf_cache_dir, f"cheader_{header_hash}.elf")
-
-        if not os.path.exists(elf_path):
-            log.info(f"Compiling {os.path.basename(header_path)} to DWARF ELF...")
-            try:
-                cmd = ['gcc', '-x', 'c', '-c', '-g', '-fno-eliminate-unused-debug-types']
-                if bits != host_bits:
-                    cmd.append(f'-m{bits}')
-                if include_dirs:
-                    for d in include_dirs:
-                        cmd.extend(['-I', os.path.abspath(d)])
-                cmd.extend([header_path, '-o', elf_path])
-                subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            except FileNotFoundError:
-                log.error("Failed to compile header: 'gcc' is not installed or not in PATH.")
-                raise
-            except subprocess.CalledProcessError as e:
-                log.error(f"GCC failed to compile the header:\n{e.stderr.decode() if e.stderr else ''}")
-                raise
-
-        kwargs.setdefault('checksec', False)
-        super().__init__(elf_path, **kwargs)
-
-    # remove annoying pwntools warning
-    def _populate_got(self): pass
-
-
-class CInline(CHeader):
-    """
-    Like CHeader but accepts C source code directly as a string instead of a
-    file path. Types are compiled to DWARF on the fly and cached by content
-    hash, so repeated calls with identical source never recompile.
-
-    Example:
-        types = CInline('''
-            typedef struct chunk {
-                size_t prev_size;
-                size_t size;
-                struct chunk *fd, *bk;
-            } chunk;
-        ''')
-        c = types.craft('chunk')
-        c.size = 0x21
-
-    # 32-bit layout
-    types32 = CInline('typedef struct foo { int x; } foo;', bits=32)
-    """
-    def __init__(self, source, bits=None, **kwargs):
-        import tempfile
-        src_bytes = source.encode() if isinstance(source, str) else bytes(source)
-        with tempfile.NamedTemporaryFile(suffix='.h', prefix='cinline_') as f:
-            f.write(src_bytes)
-            f.flush()
-            super().__init__(f.name, bits=bits, **kwargs)
+        return (base_addr + offset) & va_mask(self.bits)

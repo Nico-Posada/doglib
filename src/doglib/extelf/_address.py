@@ -2,6 +2,8 @@ import re
 import struct
 from pwnlib.log import getLogger
 
+from ._constants import STRUCT_TAGS, array_stride, va_mask, inner_count, dims_str
+
 log = getLogger(__name__)
 
 class DWARFAddress(int):
@@ -27,8 +29,7 @@ class DWARFAddress(int):
         return f"<DWARFAddress {hex(int(self))} type={type_name}>"
 
     def __add__(self, other):
-        mask = (1 << self._elf.bits) - 1
-        return DWARFAddress((int(self) + int(other)) & mask, self._elf, self._type_die_offset, self._subrange_start)
+        return DWARFAddress((int(self) + int(other)) & va_mask(self._elf.bits), self._elf, self._type_die_offset, self._subrange_start)
 
     def __radd__(self, other):
         return self.__add__(other)
@@ -36,8 +37,7 @@ class DWARFAddress(int):
     def __sub__(self, other):
         if isinstance(other, DWARFAddress):
             return int.__sub__(self, other)
-        mask = (1 << self._elf.bits) - 1
-        return DWARFAddress((int(self) - int(other)) & mask, self._elf, self._type_die_offset, self._subrange_start)
+        return DWARFAddress((int(self) - int(other)) & va_mask(self._elf.bits), self._elf, self._type_die_offset, self._subrange_start)
 
     def __getattr__(self, name):
         if name.startswith('__') and name.endswith('__'):
@@ -46,13 +46,13 @@ class DWARFAddress(int):
         dwarfinfo = self._elf._get_dwarfinfo()
         die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
         current_die = self._elf._unwrap_type(die)
-        mask = (1 << self._elf.bits) - 1
+        mask = va_mask(self._elf.bits)
 
         if current_die.tag == 'DW_TAG_pointer_type':
             log.error(f"Cannot statically resolve through a pointer at '.{name}'. Dereference first.")
             raise AttributeError(name)
 
-        if current_die.tag not in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        if current_die.tag not in STRUCT_TAGS:
             raise AttributeError(f"Type {current_die.tag} is not a struct/union. Cannot access '.{name}'")
 
         result = self._elf._find_member(current_die, name)
@@ -69,7 +69,7 @@ class DWARFAddress(int):
         dwarfinfo = self._elf._get_dwarfinfo()
         die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
         current_die = self._elf._unwrap_type(die)
-        mask = (1 << self._elf.bits) - 1
+        mask = va_mask(self._elf.bits)
 
         if current_die.tag == 'DW_TAG_pointer_type':
             pointed = self._elf._get_die_from_attr(current_die, 'DW_AT_type')
@@ -85,20 +85,13 @@ class DWARFAddress(int):
             raise TypeError(f"Cannot index into non-array type {current_die.tag}")
 
         subranges = self._elf._get_array_subranges(current_die)
-        remaining = subranges[self._subrange_start:]
-        if not remaining:
+        if not subranges[self._subrange_start:]:
             raise TypeError("No more array dimensions to index")
 
-        elem_type = self._elf._unwrap_type(self._elf._get_die_from_attr(current_die, 'DW_AT_type'))
-        elem_size = self._elf._get_byte_size(elem_type)
-
-        stride = elem_size
-        for dim in remaining[1:]:
-            stride *= dim
-
+        stride, elem_type, remaining_len = array_stride(self._elf, current_die, self._subrange_start)
         new_addr = (int(self) + index * stride) & mask
 
-        if len(remaining) == 1:
+        if remaining_len <= 1:
             return DWARFAddress(new_addr, self._elf, elem_type.offset)
         return DWARFAddress(new_addr, self._elf, current_die.offset, self._subrange_start + 1)
 
@@ -115,17 +108,12 @@ class DWARFArray:
         self._elf = elf
         self._elem_type_offset = elem_type_offset
         self._dims = (dims,) if isinstance(dims, int) else tuple(dims)
-        self._mask = (1 << elf.bits) - 1
+        self._mask = va_mask(elf.bits)
         die = elf._get_dwarfinfo().get_DIE_from_refaddr(elem_type_offset)
         self._elem_size = elf._get_byte_size(die)
 
     def _inner_count(self):
-        result = 1
-        for d in self._dims[1:]:
-            if d is None:
-                return 1
-            result *= d
-        return result
+        return inner_count(self._dims)
 
     def __getitem__(self, index):
         if isinstance(index, slice):
@@ -156,6 +144,5 @@ class DWARFArray:
         type_name = self._elf._get_type_name(die)
         if self._dims == (None,):
             return f"<DWARFArray {hex(self._base)} type={type_name}*>"
-        dims_str = ''.join(f'[{d}]' for d in self._dims)
-        return f"<DWARFArray {hex(self._base)} type={type_name}{dims_str}>"
+        return f"<DWARFArray {hex(self._base)} type={type_name}{dims_str(self._dims)}>"
 

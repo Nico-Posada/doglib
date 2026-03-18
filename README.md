@@ -58,6 +58,12 @@ bytes(j) # b'\x18\x00\x00\x00\x18\x00\x00\x00.....'
 even on opus 4.6 i am still finding myself fixing simple issues.  
 but i am trying my best. 
 
+### dwarf_parser_rs
+optional rust-based parser to make ExtELF faster
+the parser has to look at ALL debug info objects and determine which ones are relevant to us,
+which on big libcs can be 1m+ objects. we can cache this to make it near-instant after the first parse,
+but that first parse can still take some time (~20s). this uses [gimli](github.com/gimli-rs/gimli) to make
+that first parse less than a second.
 
 ## asm
 basic assembler/disassembler stuff because pwntools is ungodly slow  
@@ -75,3 +81,4 @@ payload = house_of_muney(libc,{
 })
 print(payload) # b'\x00\x00\x00\x00....'
 ```
+

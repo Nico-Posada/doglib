@@ -1,7 +1,8 @@
 from ._address import DWARFAddress, DWARFArray
-from ._enum import DWARFEnum
+from ._cheader import CHeader, CInline
 from ._crafter import DWARFCrafter, DWARFArrayCrafter
-from ._elf import ExtendedELF, CHeader, CInline, _CVarAccessor
+from ._enum import DWARFEnum
+from ._elf import ExtendedELF, _CVarAccessor
 from ._builtin_types import CTypes
 
 ExtELF = ExtendedELF

@@ -4,6 +4,8 @@ import struct
 from pwnlib.log import getLogger
 from pwnlib.util.cyclic import cyclic as _pwn_cyclic
 
+from ._constants import STRUCT_TAGS, PRIMITIVE_TAGS, array_stride, dims_str, inner_count
+
 log = getLogger(__name__)
 
 class DWARFCrafter:
@@ -58,12 +60,12 @@ class DWARFCrafter:
                 return f"<{type_name} {hex(v)}>"
 
             if current_die.tag == 'DW_TAG_pointer_type':
-                return f"<{type_name} {hex(int.from_bytes(bytes(self), 'little' if self._elf.little_endian else 'big', signed=False))}>"
+                return f"<{type_name} {hex(int.from_bytes(bytes(self), self._byte_order, signed=False))}>"
 
             if current_die.tag == 'DW_TAG_enumeration_type':
                 return f"<{type_name} {hex(self.value)}>"
 
-            if current_die.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+            if current_die.tag in STRUCT_TAGS:
                 parts = []
                 for child in current_die.iter_children():
                     if child.tag != 'DW_TAG_member':
@@ -80,8 +82,7 @@ class DWARFCrafter:
                     if field_unwrapped and field_unwrapped.tag == 'DW_TAG_array_type':
                         total = self._elf._get_byte_size(field_unwrapped)
                         dims = self._elf._get_array_subranges(field_unwrapped)
-                        dims_str = ''.join(f'[{d}]' for d in dims)
-                        parts.append(f"{field_name}=<array{dims_str}>")
+                        parts.append(f"{field_name}=<array{dims_str(dims)}>")
                         continue
                     field_size = self._elf._get_byte_size(field_unwrapped) if field_unwrapped else 0
                     if field_size > 16:
@@ -95,8 +96,7 @@ class DWARFCrafter:
 
             if current_die.tag == 'DW_TAG_array_type':
                 dims = self._elf._get_array_subranges(current_die)
-                dims_str = ''.join(f'[{d}]' for d in dims[self._subrange_start:])
-                return f"<array{dims_str} size={self._size}>"
+                return f"<array{dims_str(dims[self._subrange_start:])} size={self._size}>"
         except Exception:
             pass
         hex_data = bytes(self).hex()
@@ -107,12 +107,9 @@ class DWARFCrafter:
         """Return the unsigned integer interpretation of this field's bytes.
         This ensures p64/p32/hex/etc always work. Use .value for signed."""
         raw = bytes(self._backing[self._offset : self._offset + self._size])
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
-        if current_die.tag in ('DW_TAG_base_type', 'DW_TAG_pointer_type', 'DW_TAG_enumeration_type'):
-            byte_order = 'little' if self._elf.little_endian else 'big'
-            return int.from_bytes(raw, byteorder=byte_order, signed=False)
+        current_die = self._get_current_die()
+        if current_die.tag in PRIMITIVE_TAGS:
+            return int.from_bytes(raw, byteorder=self._byte_order, signed=False)
         raise TypeError(f"Cannot convert {current_die.tag} to int (struct/union types have no single integer value; use bytes() for raw data)")
 
     def __int__(self):
@@ -132,10 +129,20 @@ class DWARFCrafter:
             return v
         raise TypeError(f"Cannot perform arithmetic on {type(v).__name__} (struct/union types have no single numeric value)")
 
-    def _struct_tag(self):
-        """Return the unwrapped DWARF tag string for this crafter's type."""
+    def _get_current_die(self):
+        """Return the unwrapped DWARF DIE for this crafter's type."""
         die = self._elf._get_dwarfinfo().get_DIE_from_refaddr(self._type_die_offset)
-        return self._elf._unwrap_type(die).tag
+        return self._elf._unwrap_type(die)
+
+    @property
+    def _byte_order(self):
+        return 'little' if self._elf.little_endian else 'big'
+
+    def _is_struct_concat_compatible(self, other):
+        """True if other is same-type struct/union for concatenation."""
+        return (isinstance(other, DWARFCrafter)
+                and other._type_die_offset == self._type_die_offset
+                and self._get_current_die().tag in STRUCT_TAGS)
 
     # ------------------------------------------------------------------ #
     #  Arithmetic / comparison operators                                   #
@@ -144,9 +151,7 @@ class DWARFCrafter:
     def __add__(self, other):
         """struct + struct of the same type → DWARFArrayCrafter of 2 elements.
         All other cases fall through to numeric addition."""
-        if (isinstance(other, DWARFCrafter)
-                and other._type_die_offset == self._type_die_offset
-                and self._struct_tag() in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type')):
+        if self._is_struct_concat_compatible(other):
             combined = bytearray(bytes(self)) + bytearray(bytes(other))
             return DWARFArrayCrafter(self._elf, self._type_die_offset, (2,), backing=combined)
         return self._numeric_value() + other
@@ -155,9 +160,7 @@ class DWARFCrafter:
         """other + self — mirrors __add__ for the struct-concatenation case.
         Python calls __radd__ when other.__add__(self) returns NotImplemented,
         which includes the subclass-priority rule where self is a subclass of other."""
-        if (isinstance(other, DWARFCrafter)
-                and other._type_die_offset == self._type_die_offset
-                and self._struct_tag() in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type')):
+        if self._is_struct_concat_compatible(other):
             combined = bytearray(bytes(other)) + bytearray(bytes(self))
             return DWARFArrayCrafter(self._elf, self._type_die_offset, (2,), backing=combined)
         return other + self._numeric_value()
@@ -167,7 +170,7 @@ class DWARFCrafter:
     def __mul__(self, n):
         """struct * int → DWARFArrayCrafter of n independent copies.
         All other cases fall through to numeric multiplication."""
-        if isinstance(n, int) and self._struct_tag() in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        if isinstance(n, int) and self._get_current_die().tag in STRUCT_TAGS:
             if n < 0:
                 raise ValueError("Repetition count must be non-negative")
             return DWARFArrayCrafter(self._elf, self._type_die_offset, (n,),
@@ -244,28 +247,24 @@ class DWARFCrafter:
     @property
     def value(self):
         """Read back the current value of a primitive field from the backing array."""
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
-
+        current_die = self._get_current_die()
         raw = bytes(self._backing[self._offset : self._offset + self._size])
-        byte_order = 'little' if self._elf.little_endian else 'big'
 
         if current_die.tag == 'DW_TAG_base_type':
             encoding = current_die.attributes.get('DW_AT_encoding')
             if encoding:
                 enc = encoding.value
                 if enc == 0x02:  # DW_ATE_boolean
-                    return bool(int.from_bytes(raw, byteorder=byte_order, signed=False))
+                    return bool(int.from_bytes(raw, byteorder=self._byte_order, signed=False))
                 if enc == 0x04:  # DW_ATE_float
                     fmt = ('<' if self._elf.little_endian else '>') + ('f' if self._size == 4 else 'd')
                     return struct.unpack(fmt, raw)[0]
                 if enc in (0x05, 0x06):  # DW_ATE_signed, DW_ATE_signed_char
-                    return int.from_bytes(raw, byteorder=byte_order, signed=True)
-            return int.from_bytes(raw, byteorder=byte_order, signed=False)
+                    return int.from_bytes(raw, byteorder=self._byte_order, signed=True)
+            return int.from_bytes(raw, byteorder=self._byte_order, signed=False)
 
         if current_die.tag in ('DW_TAG_pointer_type', 'DW_TAG_enumeration_type'):
-            return int.from_bytes(raw, byteorder=byte_order, signed=False)
+            return int.from_bytes(raw, byteorder=self._byte_order, signed=False)
 
         return raw
 
@@ -280,8 +279,7 @@ class DWARFCrafter:
         if isinstance(value, DWARFCrafter):
             val_bytes = bytes(value).ljust(size, b'\x00')[:size]
         elif isinstance(value, int):
-            byte_order = 'little' if self._elf.little_endian else 'big'
-            val_bytes = (value & ((1 << (size * 8)) - 1)).to_bytes(size, byteorder=byte_order)
+            val_bytes = (value & ((1 << (size * 8)) - 1)).to_bytes(size, byteorder=self._byte_order)
         elif isinstance(value, float):
             byte_order = '<' if self._elf.little_endian else '>'
             if size == 4:
@@ -305,14 +303,12 @@ class DWARFCrafter:
 
     def _resolve_field(self, name):
         """Resolve a struct field name to (offset, type_die)."""
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
+        current_die = self._get_current_die()
 
         if current_die.tag == 'DW_TAG_pointer_type':
             raise AttributeError(f"Cannot resolve through a pointer at '.{name}'. Set the pointer directly.")
 
-        if current_die.tag not in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        if current_die.tag not in STRUCT_TAGS:
             raise AttributeError(f"Type {current_die.tag} is not a struct/union. Cannot access '.{name}'")
 
         result = self._elf._find_member(current_die, name)
@@ -330,9 +326,7 @@ class DWARFCrafter:
                 )
             raise TypeError(f"Array indices must be integers, not {type(index).__name__}")
 
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
+        current_die = self._get_current_die()
 
         if current_die.tag == 'DW_TAG_pointer_type':
             raise TypeError("Cannot index a pointer in struct crafter. Set the pointer address directly.")
@@ -341,28 +335,19 @@ class DWARFCrafter:
             raise TypeError(f"Cannot index into non-array type {current_die.tag}")
 
         subranges = self._elf._get_array_subranges(current_die)
-        remaining = subranges[self._subrange_start:]
-        if not remaining:
+        if not subranges[self._subrange_start:]:
             raise TypeError("No more array dimensions to index")
 
-        elem_type = self._elf._unwrap_type(self._elf._get_die_from_attr(current_die, 'DW_AT_type'))
-        elem_size = self._elf._get_byte_size(elem_type)
-
-        stride = elem_size
-        for dim in remaining[1:]:
-            stride *= dim
-
+        stride, elem_type, remaining_len = array_stride(self._elf, current_die, self._subrange_start)
         elem_offset = index * stride
 
-        if len(remaining) == 1:
+        if remaining_len <= 1:
             return elem_offset, elem_type, 0
         return elem_offset, current_die, self._subrange_start + 1
 
     def _current_array_length(self):
         """Get the current dimension's length for slice support."""
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
+        current_die = self._get_current_die()
         if current_die.tag != 'DW_TAG_array_type':
             raise TypeError("Cannot slice a non-array type")
         subranges = self._elf._get_array_subranges(current_die)
@@ -464,10 +449,8 @@ class DWARFCrafter:
             for name, field in chunk.items():
                 print(name, field.value)
         """
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
-        if current_die.tag not in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        current_die = self._get_current_die()
+        if current_die.tag not in STRUCT_TAGS:
             raise TypeError(f"items() only works on struct/union types, not {current_die.tag}")
         for child in current_die.iter_children():
             if child.tag != 'DW_TAG_member':
@@ -493,8 +476,8 @@ class DWARFCrafter:
         """
         dwarfinfo = self._elf._get_dwarfinfo()
         die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
-        if current_die.tag not in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        current_die = self._get_current_die()
+        if current_die.tag not in STRUCT_TAGS:
             raise TypeError(f"dump() only works on struct/union types, not {current_die.tag}")
         type_name = self._elf._get_type_name(die)
         print(f"{type_name}:")
@@ -504,7 +487,7 @@ class DWARFCrafter:
             if field_unwrapped and field_unwrapped.tag == 'DW_TAG_array_type':
                 total = self._elf._get_byte_size(field_unwrapped)
                 dims = self._elf._get_array_subranges(field_unwrapped)
-                dims_str = ''.join(f'[{d}]' for d in dims)
+                ds = dims_str(dims)
                 elem_type = self._elf._get_die_from_attr(field_unwrapped, 'DW_AT_type')
                 elem_name = self._elf._get_type_name(elem_type) if elem_type else '?'
                 total_elems = 1
@@ -526,9 +509,9 @@ class DWARFCrafter:
                             return [el.value for el in crafter]
                         return [_collect_vals(el, remaining_dims[1:]) for el in crafter]
                     nested = _collect_vals(field, dims)
-                    print(f"  {field_name}: {elem_name}{dims_str} = {_fmt_val(nested)}")
+                    print(f"  {field_name}: {elem_name}{ds} = {_fmt_val(nested)}")
                 else:
-                    print(f"  {field_name}: {elem_name}{dims_str} ({total} bytes)")
+                    print(f"  {field_name}: {elem_name}{ds} ({total} bytes)")
             else:
                 v = field.value
                 if isinstance(v, bool):
@@ -606,15 +589,13 @@ class DWARFCrafter:
             boss.matrix.values()          # [[1,2,3],[4,5,6]]
             chunk.values()                # {'prev_size': 0, 'size': 0x21, ...}
         """
-        dwarfinfo = self._elf._get_dwarfinfo()
-        die = dwarfinfo.get_DIE_from_refaddr(self._type_die_offset)
-        current_die = self._elf._unwrap_type(die)
-        if current_die.tag in ('DW_TAG_base_type', 'DW_TAG_pointer_type', 'DW_TAG_enumeration_type'):
+        current_die = self._get_current_die()
+        if current_die.tag in PRIMITIVE_TAGS:
             return self.value
         if current_die.tag == 'DW_TAG_array_type':
             length = self._current_array_length()
             return [self[i].values() for i in range(length)]
-        if current_die.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type', 'DW_TAG_union_type'):
+        if current_die.tag in STRUCT_TAGS:
             return {name: field.values() for name, field in self.items()}
         return bytes(self)
 
@@ -687,10 +668,7 @@ class DWARFArrayCrafter:
         self._backing = backing if backing is not None else bytearray(self._total_bytes)
 
     def _inner_count(self):
-        result = 1
-        for d in self._dims[1:]:
-            result *= d
-        return result
+        return inner_count(self._dims)
 
     def __getitem__(self, index):
         if isinstance(index, slice):
@@ -761,8 +739,7 @@ class DWARFArrayCrafter:
     def __repr__(self):
         die = self._elf._get_dwarfinfo().get_DIE_from_refaddr(self._type_die_offset)
         type_name = self._elf._get_type_name(die)
-        dims_str = ''.join(f'[{d}]' for d in self._dims)
-        return f"<DWARFArrayCrafter {type_name}{dims_str} size={self._total_bytes}>"
+        return f"<DWARFArrayCrafter {type_name}{dims_str(self._dims)} size={self._total_bytes}>"
 
     def values(self):
         """

@@ -1,4 +1,4 @@
-from ._elf import CHeader
+from ._cheader import CHeader
 
 class CTypes(CHeader):
     def __init__(self, bits=None):
