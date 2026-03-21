@@ -38,6 +38,39 @@ def target_no_pie():
 
 
 @pytest.fixture(scope="session")
+def target_32bit():
+    """Compile the test target as a 32-bit non-PIE binary.
+
+    Skipped if gcc-multilib is not installed.
+    """
+    src = os.path.join(TEST_DIR, "target.c")
+    out = os.path.join(TEST_DIR, "target_32bit")
+    try:
+        subprocess.check_call(["gcc", "-m32", "-o", out, src, "-no-pie"],
+                              stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        pytest.skip("32-bit compilation failed (gcc-multilib installed?)")
+    yield out
+    if os.path.exists(out):
+        os.unlink(out)
+
+
+@pytest.fixture(scope="session")
+def target_32bit_pie():
+    """Compile the test target as a 32-bit PIE binary."""
+    src = os.path.join(TEST_DIR, "target.c")
+    out = os.path.join(TEST_DIR, "target_32bit_pie")
+    try:
+        subprocess.check_call(["gcc", "-m32", "-o", out, src, "-pie"],
+                              stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        pytest.skip("32-bit compilation failed (gcc-multilib installed?)")
+    yield out
+    if os.path.exists(out):
+        os.unlink(out)
+
+
+@pytest.fixture(scope="session")
 def target_patched_libc():
     """Compile a non-PIE binary and patch it to use a known libc via pwninit.
 

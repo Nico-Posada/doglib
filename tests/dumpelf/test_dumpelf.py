@@ -164,6 +164,91 @@ class TestDumpELFPIE:
             os.close(leak._fd)
 
 
+class TestDumpELF32:
+    """Test with 32-bit binaries (ELFCLASS32)."""
+
+    def test_find_base_32bit(self, target_32bit):
+        p, leak, elf = _launch_and_get_leak(target_32bit)
+        try:
+            d = DumpELF(leak, elf.address + 0x100)
+            assert d.base == elf.address
+            assert d.elfclass == 32
+            assert d.elftype == "EXEC"
+            assert d.is_pie is False
+        finally:
+            p.send(b"q\n")
+            p.close()
+            os.close(leak._fd)
+
+    def test_dump_and_reconstruct_32bit(self, target_32bit):
+        p, leak, elf = _launch_and_get_leak(target_32bit)
+        try:
+            d = DumpELF(leak, elf.address + 0x100)
+
+            with tempfile.NamedTemporaryFile(suffix=".elf", delete=False) as f:
+                tmp_path = f.name
+
+            elf_bytes = d.dump(tmp_path)
+            assert elf_bytes[:4] == b"\x7fELF"
+
+            with context.local(log_level="error"):
+                reconstructed = ELF(tmp_path, checksec=False)
+
+            assert reconstructed.elfclass == 32
+            assert reconstructed.entry > 0
+            assert len(reconstructed.sections) > 2
+
+            os.unlink(tmp_path)
+        finally:
+            p.send(b"q\n")
+            p.close()
+            os.close(leak._fd)
+
+    def test_find_base_32bit_pie(self, target_32bit_pie):
+        p, leak, elf = _launch_and_get_leak(target_32bit_pie)
+        try:
+            with open(f"/proc/{p.pid}/maps") as f:
+                first_line = f.readline()
+            runtime_base = int(first_line.split("-")[0], 16)
+
+            d = DumpELF(leak, runtime_base + 0x100)
+            assert d.base == runtime_base
+            assert d.elfclass == 32
+            assert d.elftype == "DYN"
+            assert d.is_pie is True
+        finally:
+            p.send(b"q\n")
+            p.close()
+            os.close(leak._fd)
+
+    def test_dump_32bit_pie(self, target_32bit_pie):
+        p, leak, elf = _launch_and_get_leak(target_32bit_pie)
+        try:
+            with open(f"/proc/{p.pid}/maps") as f:
+                first_line = f.readline()
+            runtime_base = int(first_line.split("-")[0], 16)
+
+            d = DumpELF(leak, runtime_base + 0x100)
+
+            with tempfile.NamedTemporaryFile(suffix=".elf", delete=False) as f:
+                tmp_path = f.name
+
+            elf_bytes = d.dump(tmp_path)
+            assert elf_bytes[:4] == b"\x7fELF"
+
+            with context.local(log_level="error"):
+                reconstructed = ELF(tmp_path, checksec=False)
+
+            assert reconstructed.elfclass == 32
+            assert reconstructed.entry > 0
+
+            os.unlink(tmp_path)
+        finally:
+            p.send(b"q\n")
+            p.close()
+            os.close(leak._fd)
+
+
 class TestReconstruct:
     """Unit tests for the reconstruction module (no remote needed)."""
 
