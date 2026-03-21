@@ -15,7 +15,7 @@ import pytest
 from pwn import ELF, context, process
 
 from doglib.dumpelf import DumpELF
-from doglib.dumpelf._libc import find_build_id, find_version_string
+from doglib.dumpelf._libc import find_build_id, find_version_string, download_libc_by_version
 from doglib.dumpelf._reconstruct import (
     _ElfHeader,
     _Phdr,
@@ -262,6 +262,16 @@ class TestLibcIdentification:
         version, distro = result
         assert "2.39" in version
         assert distro == "ubuntu"
+
+    def test_download_libc_by_version(self):
+        """Download a known Ubuntu libc by version string."""
+        path = download_libc_by_version("2.39-0ubuntu8.5", "ubuntu", "amd64")
+        assert path is not None, "download returned None"
+        assert os.path.exists(path), "downloaded file does not exist"
+        assert os.path.getsize(path) > 1_000_000, "file too small to be libc"
+
+        with open(path, "rb") as f:
+            assert f.read(4) == b"\x7fELF", "not a valid ELF"
 
     def test_build_id_from_leak(self, target_patched_libc):
         """Extract the libc build ID via a /proc/pid/mem leak primitive."""

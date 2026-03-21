@@ -2,19 +2,23 @@
 Remote libc identification and download.
 
 Two strategies are tried in order:
-  1. Build ID extraction (fast, uses known offsets, then PT_NOTE scan)
-  2. Version string scanning (fallback, searches dumped text)
+  1. Build ID extraction → pwntools libcdb / libc.rip
+  2. Version string scanning → download from distro package mirrors
 
-Both feed into pwntools' libcdb for the actual download.
+Both return a local path to the downloaded libc.
 """
 from __future__ import annotations
 
+import io
+import os
+import tarfile
 from typing import Optional, Tuple
 
 from pwnlib import libcdb
 from pwnlib.context import context
 from pwnlib.log import getLogger
 from pwnlib.util.fiddling import enhex
+from pwnlib.util.web import wget
 
 log = getLogger(__name__)
 
@@ -151,30 +155,146 @@ def download_libc_by_build_id(build_id: str) -> Optional[str]:
     return path
 
 
-def download_libc_by_version(version: str, distro: str, arch: str = None) -> Optional[str]:
-    """Try to search for a libc via symbol offset heuristics or libcdb.
+_UBUNTU_PKG_URL = "https://launchpad.net/ubuntu/+archive/primary/+files"
+_DEBIAN_PKG_URL = "https://deb.debian.org/debian/pool/main/g/glibc"
 
-    This is a best-effort fallback when the build ID is not available.
-    We construct a search query that libcdb/libc.rip might be able to
-    answer.  In practice the build-ID path is much more reliable.
+_LIBC_BASENAMES = {"libc.so.6", "libc-2.so", "libc.so"}
+
+_AR_MAGIC = b"!<arch>\n"
+_AR_HDR_SIZE = 60
+_AR_HDR_FMT = "16s12s6s6s8s10sbb"  # struct format for ar entry headers
+
+
+def _iter_ar(data: bytes):
+    """Yield ``(name, content_bytes)`` from an ``ar`` archive.
+
+    Minimal parser sufficient for ``.deb`` files (which use short entry
+    names like ``data.tar.zst``).  Derived from the ``ar`` package
+    (MIT licence).
+    """
+    import struct as _struct
+
+    if data[:8] != _AR_MAGIC:
+        return
+    f = io.BytesIO(data)
+    f.seek(8)
+
+    while True:
+        hdr = f.read(_AR_HDR_SIZE)
+        if len(hdr) < _AR_HDR_SIZE:
+            break
+        name, _, _, _, _, size_s, _, _ = _struct.unpack(_AR_HDR_FMT, hdr)
+        name = name.decode().rstrip().rstrip("/")
+        size = int(size_s.decode().rstrip())
+
+        content = f.read(size)
+        if size & 1:
+            f.seek(1, 1)
+
+        if name in ("/", "//"):
+            continue
+        yield name, content
+
+
+def _extract_libc_from_deb(deb_data: bytes, out_dir: str) -> Optional[str]:
+    """Extract ``libc.so.6`` from a ``.deb`` package.
+
+    Uses a minimal inline ``ar`` parser for the outer archive and
+    ``tarfile`` for the inner ``data.tar.*``.
 
     Returns:
-        Path to the downloaded file on disk, or None.
+        Path to the extracted libc, or ``None``.
     """
-    log.info("Attempting libc lookup for %s %s", distro, version)
-    # pwntools doesn't have a direct "search by version string" API,
-    # but we can try the build-id based providers by looking for the
-    # version string in the database via libc.rip
-    try:
-        import requests
-        url = "https://libc.rip/api/find"
-        resp = requests.post(url, json={"buildid": ""}, timeout=10)
-    except Exception:
-        pass
+    tar_name = None
+    tar_data = None
+    for name, content in _iter_ar(deb_data):
+        if name.startswith("data.tar"):
+            tar_name = name
+            tar_data = content
+            break
 
-    log.warning(
-        "Identified libc as %s %s but could not auto-download. "
-        "Try searching https://libc.rip or your distro's package archive manually.",
-        distro, version,
-    )
+    if tar_data is None:
+        return None
+
+    # tarfile handles gz/xz/bz2 natively; zstd needs manual decompression.
+    if tar_name.endswith(".zst") or tar_name.endswith(".zstd"):
+        import zstandard
+        tar_data = zstandard.ZstdDecompressor().decompress(
+            tar_data, max_output_size=256 * 1024 * 1024,
+        )
+
+    with tarfile.open(fileobj=io.BytesIO(tar_data)) as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            basename = os.path.basename(member.name)
+            if basename in _LIBC_BASENAMES:
+                f = tf.extractfile(member)
+                if f is None:
+                    continue
+                final = os.path.join(out_dir, basename)
+                with open(final, "wb") as out:
+                    out.write(f.read())
+                return final
+
+    return None
+
+
+def download_libc_by_version(
+    version: str,
+    distro: str,
+    arch: str = "amd64",
+) -> Optional[str]:
+    """Download a libc from Ubuntu/Debian package mirrors by version string.
+
+    Constructs the package URL the same way *pwninit* does, downloads the
+    ``.deb``, and extracts ``libc.so.6`` from it.
+
+    Arguments:
+        version: Full version string, e.g. ``"2.39-0ubuntu8.5"``.
+        distro:  ``"ubuntu"`` or ``"debian"``.
+        arch:    ``"amd64"`` or ``"i386"``.
+
+    Returns:
+        Path to the extracted libc on disk, or ``None``.
+    """
+    deb_name = "libc6_%s_%s.deb" % (version, arch)
+    if distro == "ubuntu":
+        url = "%s/%s" % (_UBUNTU_PKG_URL, deb_name)
+    elif distro == "debian":
+        url = "%s/%s" % (_DEBIAN_PKG_URL, deb_name)
+    else:
+        log.warning("Unknown distro %r, cannot download libc", distro)
+        return None
+
+    # Check cache first
+    cache_dir = os.path.join(context.cache_dir, "dumpelf_libc",
+                             "%s_%s_%s" % (distro, version, arch))
+    cached = os.path.join(cache_dir, "libc.so.6")
+    if os.path.exists(cached):
+        log.success("Using cached libc at %s", cached)
+        return cached
+
+    w = log.waitfor("Downloading libc from %s" % distro)
+    w.status(url)
+
+    package = wget(url, timeout=20)
+    if not package:
+        w.failure("download failed")
+        return None
+
+    os.makedirs(cache_dir, exist_ok=True)
+    w.status("extracting libc from deb")
+
+    try:
+        libc_path = _extract_libc_from_deb(package, cache_dir)
+    except Exception as e:
+        w.failure("extraction failed: %s" % e)
+        return None
+
+    if libc_path and os.path.exists(libc_path):
+        w.success("saved to %s" % libc_path)
+        return libc_path
+
+    w.failure("could not find libc.so.6 inside deb")
     return None

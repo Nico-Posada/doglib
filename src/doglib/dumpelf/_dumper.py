@@ -31,6 +31,7 @@ from doglib.dumpelf._libc import (
     find_build_id,
     find_version_string,
     download_libc_by_build_id,
+    download_libc_by_version,
 )
 
 log = getLogger(__name__)
@@ -414,7 +415,7 @@ class DumpELF:
                 w.success("identified via build ID: %s" % build_id)
                 return libc
 
-        # Strategy 2: version string from dumped text
+        # Strategy 2: version string → download from distro mirror
         w.status("trying version string scan")
         try:
             lib_dumper = DumpELF(self.leak, libc_base)
@@ -422,7 +423,16 @@ class DumpELF:
                 result = find_version_string(seg_data)
                 if result:
                     version, distro = result
-                    w.success("identified as %s %s (download manually or via libcdb)" % (distro, version))
+                    arch = "amd64" if self.elfclass == 64 else "i386"
+                    libc_path = download_libc_by_version(version, distro, arch)
+                    if libc_path:
+                        with context.local(log_level="error"):
+                            libc = ELF(libc_path)
+                        libc.address = libc_base
+                        self._libc = libc
+                        w.success("identified as %s %s via version string" % (distro, version))
+                        return libc
+                    w.failure("identified as %s %s but download failed" % (distro, version))
                     return None
         except Exception as e:
             log.debug("Version string scan failed: %s", e)
