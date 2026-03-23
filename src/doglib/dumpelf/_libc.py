@@ -10,8 +10,10 @@ Both return a local path to the downloaded libc.
 from __future__ import annotations
 
 import io
+import json
 import os
 import tarfile
+import urllib.parse
 from typing import Optional, Tuple
 
 from pwnlib import libcdb
@@ -157,6 +159,12 @@ def download_libc_by_build_id(build_id: str) -> Optional[str]:
 
 _UBUNTU_PKG_URL = "https://launchpad.net/ubuntu/+archive/primary/+files"
 _DEBIAN_PKG_URL = "https://deb.debian.org/debian/pool/main/g/glibc"
+# Security updates (versions with +debNuN suffix) live on security.debian.org.
+_DEBIAN_SEC_PKG_URL = "https://security.debian.org/debian-security/pool/updates/main/g/glibc"
+# Snapshot API: stable hash-based URLs for any historical Debian package.
+# {pkg} is the binary package name (e.g. "libc6" or "libc6-dbg").
+_DEBIAN_SNAPSHOT_API = "https://snapshot.debian.org/mr/binary/{pkg}/{version}/binfiles?fileinfo=1"
+_DEBIAN_SNAPSHOT_FILE = "https://snapshot.debian.org/file/{hash}"
 
 _LIBC_BASENAMES = {"libc.so.6", "libc-2.so", "libc.so"}
 
@@ -258,6 +266,72 @@ def _extract_libc_from_deb(deb_data: bytes, out_dir: str) -> Optional[str]:
     return None
 
 
+def _query_debian_snapshot(deb_name: str, version: str, pkg: str = "libc6") -> Optional[str]:
+    """Query snapshot.debian.org for a stable download URL for *deb_name*.
+
+    Uses the ``/mr/binary/PKG/VERSION/binfiles`` JSON API to look up the
+    SHA1 hash of the requested file, then returns a ``/file/HASH`` URL that
+    is guaranteed to stay valid regardless of what the live mirrors carry.
+
+    Arguments:
+        deb_name: Exact ``.deb`` filename to locate (e.g. ``"libc6-dbg_2.41-12+deb13u1_amd64.deb"``).
+        version:  Full glibc version string.
+        pkg:      Debian binary package name (``"libc6"`` or ``"libc6-dbg"``).
+
+    Returns a URL string, or ``None`` if the package was not found.
+    """
+    api_url = _DEBIAN_SNAPSHOT_API.format(
+        pkg=urllib.parse.quote(pkg, safe=""),
+        version=urllib.parse.quote(version, safe=""),
+    )
+    try:
+        raw = wget(api_url, timeout=20)
+        if not raw:
+            return None
+        data = json.loads(raw)
+        for hash_val, file_infos in data.get("fileinfo", {}).items():
+            for fi in file_infos:
+                if fi.get("name") == deb_name:
+                    return _DEBIAN_SNAPSHOT_FILE.format(hash=hash_val)
+    except Exception:
+        pass
+    return None
+
+
+def _download_deb(deb_name: str, distro: str, version: str, w, pkg: str = "libc6") -> Optional[bytes]:
+    """Download a glibc ``.deb``, trying all appropriate mirrors in order.
+
+    For Ubuntu: Launchpad (has every upload, no fallback needed).
+    For Debian: main archive → security archive → snapshot.debian.org.
+
+    Arguments:
+        pkg: Binary package name used for the snapshot API query (e.g.
+             ``"libc6"`` or ``"libc6-dbg"``).
+    """
+    if distro == "ubuntu":
+        url = "%s/%s" % (_UBUNTU_PKG_URL, deb_name)
+        w.status(url)
+        return wget(url, timeout=20)
+
+    if distro == "debian":
+        for url in (
+            "%s/%s" % (_DEBIAN_PKG_URL, deb_name),
+            "%s/%s" % (_DEBIAN_SEC_PKG_URL, deb_name),
+        ):
+            w.status(url)
+            deb_data = wget(url, timeout=20)
+            if deb_data:
+                return deb_data
+        w.status("querying snapshot.debian.org...")
+        snapshot_url = _query_debian_snapshot(deb_name, version, pkg=pkg)
+        if snapshot_url:
+            print(f"trying {snapshot_url}")
+            w.status(snapshot_url)
+            return wget(snapshot_url, timeout=60)
+
+    return None
+
+
 def download_libc_by_version(
     version: str,
     distro: str,
@@ -276,14 +350,11 @@ def download_libc_by_version(
     Returns:
         Path to the extracted libc on disk, or ``None``.
     """
-    deb_name = "libc6_%s_%s.deb" % (version, arch)
-    if distro == "ubuntu":
-        url = "%s/%s" % (_UBUNTU_PKG_URL, deb_name)
-    elif distro == "debian":
-        url = "%s/%s" % (_DEBIAN_PKG_URL, deb_name)
-    else:
+    if distro not in ("ubuntu", "debian"):
         log.warning("Unknown distro %r, cannot download libc", distro)
         return None
+
+    deb_name = "libc6_%s_%s.deb" % (version, arch)
 
     # Check cache first
     cache_dir = os.path.join(context.cache_dir, "dumpelf_libc",
@@ -294,11 +365,10 @@ def download_libc_by_version(
         return cached
 
     w = log.waitfor("Downloading libc from %s" % distro)
-    w.status(url)
 
-    package = wget(url, timeout=20)
+    package = _download_deb(deb_name, distro, version, w)
     if not package:
-        w.failure("download failed")
+        w.failure("package not found on any mirror")
         return None
 
     os.makedirs(cache_dir, exist_ok=True)
@@ -422,21 +492,17 @@ def fetch_ld_by_version(
             shutil.copy2(cached, final_out)
         return final_out
 
-    deb_name = "libc6_%s_%s.deb" % (version, arch)
-    if distro == "ubuntu":
-        url = "%s/%s" % (_UBUNTU_PKG_URL, deb_name)
-    elif distro == "debian":
-        url = "%s/%s" % (_DEBIAN_PKG_URL, deb_name)
-    else:
+    if distro not in ("ubuntu", "debian"):
         log.warning("Unknown distro %r, cannot download ld", distro)
         return None
 
-    w = log.waitfor("Downloading ld from %s" % distro)
-    w.status(url)
+    deb_name = "libc6_%s_%s.deb" % (version, arch)
 
-    package = wget(url, timeout=20)
+    w = log.waitfor("Downloading ld from %s" % distro)
+
+    package = _download_deb(deb_name, distro, version, w)
     if not package:
-        w.failure("download failed")
+        w.failure("package not found on any mirror")
         return None
 
     os.makedirs(cache_dir, exist_ok=True)
@@ -457,3 +523,126 @@ def fetch_ld_by_version(
 
     w.failure("could not find %s inside deb" % ld_in_deb)
     return None
+
+
+def _download_debug_deb(
+    version: str,
+    distro: str,
+    arch: str = "amd64",
+) -> Optional[bytes]:
+    """Download the ``libc6-dbg`` ``.deb`` for the given glibc version.
+
+    Returns the raw deb bytes, or ``None`` if the package could not be found
+    on any mirror.
+    """
+    if distro not in ("ubuntu", "debian"):
+        log.warning("Unknown distro %r, cannot download libc6-dbg", distro)
+        return None
+
+    deb_name = "libc6-dbg_%s_%s.deb" % (version, arch)
+    w = log.waitfor("Downloading libc6-dbg from %s" % distro)
+
+    package = _download_deb(deb_name, distro, version, w, pkg="libc6-dbg")
+    if not package:
+        w.failure("libc6-dbg package not found on any mirror")
+        return None
+
+    w.success("downloaded %s" % deb_name)
+    return package
+
+
+def _extract_debug_file(
+    deb_data: bytes,
+    build_id: Optional[str],
+    fallback_basename: str,
+    tmp_dir: str,
+) -> Optional[str]:
+    """Extract a debug symbols file from a ``libc6-dbg`` deb.
+
+    Tries the build-ID ``.debug`` file first (more reliable), then falls
+    back to *fallback_basename* (e.g. ``"libc-2.38.so"`` or
+    ``"ld-2.38.so"``).
+
+    Returns the path to the extracted file, or ``None``.
+    """
+    candidates: list[str] = []
+    if build_id and len(build_id) > 2:
+        candidates.append(build_id[2:] + ".debug")
+    candidates.append(fallback_basename)
+
+    for candidate in candidates:
+        out_path = os.path.join(tmp_dir, candidate)
+        try:
+            result = _extract_named_file_from_deb(deb_data, candidate, out_path)
+        except Exception:
+            result = None
+        if result and os.path.exists(result):
+            return result
+
+    return None
+
+
+def fetch_debug_by_version(
+    version: str,
+    distro: str,
+    arch: str = "amd64",
+    build_id: Optional[str] = None,
+    ld_build_id: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    """Download debug symbols for glibc from the ``libc6-dbg`` .deb.
+
+    Downloads ``libc6-dbg_VERSION_ARCH.deb`` using the same mirror fallback
+    chain as :func:`fetch_ld_by_version` (main → security → snapshot for
+    Debian; Launchpad for Ubuntu), then extracts debug symbols for the libc
+    and optionally the ld linker.
+
+    The caller is responsible for deleting the returned files (and their
+    parent temp directory) once the debug symbols have been applied.
+
+    Arguments:
+        version:     Full glibc version string, e.g. ``"2.38-1ubuntu6.3"``.
+        distro:      ``"ubuntu"`` or ``"debian"``.
+        arch:        Debian arch name: ``"amd64"``, ``"i386"``, ``"arm64"``,
+                     ``"armhf"``.
+        build_id:    Hex build-ID of the **libc**.
+        ld_build_id: Hex build-ID of the **ld** linker.  When provided,
+                     debug symbols for the linker are also extracted.
+
+    Returns:
+        Dict with keys ``"libc"`` and ``"ld"``, each mapping to the
+        extracted debug file path or ``None``.
+    """
+    import tempfile
+
+    version_short = version.split("-")[0]
+    ver_tuple = tuple(int(x) for x in version_short.split(".")[:2])
+
+    package = _download_debug_deb(version, distro, arch)
+    if package is None:
+        return {"libc": None, "ld": None}
+
+    tmp_dir = tempfile.mkdtemp(prefix="doglib_dbg_")
+    results: dict[str, Optional[str]] = {"libc": None, "ld": None}
+
+    libc_fallback = "libc-%s.so" % version_short
+    libc_dbg = _extract_debug_file(package, build_id, libc_fallback, tmp_dir)
+    if libc_dbg:
+        log.success("extracted libc debug: %s", os.path.basename(libc_dbg))
+        results["libc"] = libc_dbg
+
+    if ld_build_id is not None:
+        if ver_tuple < (2, 34):
+            ld_fallback = "ld-%s.so" % version_short
+        else:
+            ld_fallback = _LD_NAME_GE_234.get(arch, "ld-linux-x86-64.so.2")
+        ld_dbg = _extract_debug_file(package, ld_build_id, ld_fallback, tmp_dir)
+        if ld_dbg:
+            log.success("extracted ld debug: %s", os.path.basename(ld_dbg))
+            results["ld"] = ld_dbg
+
+    if results["libc"] is None and results["ld"] is None:
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        log.warning("could not find debug symbols inside libc6-dbg deb")
+
+    return results

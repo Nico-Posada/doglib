@@ -7,7 +7,7 @@ from pwnlib.context import context
 def main() -> None:
     context.log_console = sys.stderr
 
-    from doglib.commandline import fetchld, solve
+    from doglib.commandline import fetchdbg, fetchld, solve
 
     parser = argparse.ArgumentParser(
         prog="dog",
@@ -15,6 +15,7 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
     fetchld.register(sub)
+    fetchdbg.register(sub)
     solve.register(sub)
 
     args = parser.parse_args()

@@ -2,6 +2,17 @@
 things i personally wished were in pwntools but aren't  
 code is a mix of GPT slop and my own stuff
 
+## cli
+installed under the 'dog' binary
+### solve
+drop-in replacement for pwninit's template generator
+### fetchld
+given libc, go and find ld
+### fetchdbg
+given libc (and optionally ld), search debian/ubuntu repos for debug symbols to unstrip both
+  
+`fetchld` and `fetchdbg` both check important places pwninit doesn't
+
 ## misc
 random stuff. worth reading yourself.
 
