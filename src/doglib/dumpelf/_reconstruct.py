@@ -931,9 +931,9 @@ def reconstruct_elf(
     # ── 9. Fix GOT ──
     if dyn_info and not dyn_info.bind_now and got_entries > 0 and plt_addr and data_seg_idx != -1:
         dp = phdrs[data_seg_idx]
-        got_file_off = dyn_info.pltgot - dp.p_vaddr + dp.p_offset
+        got_file_off = _data_vaddr_to_offset(dyn_info.pltgot)
 
-        # GOT[1] = 0, GOT[2] = 0
+        # GOT[1] = 0, GOT[2] = 0  (link_map / _dl_runtime_resolve)
         for i in range(1, min(3, got_entries)):
             off = got_file_off + i * ptr_size
             if off + ptr_size <= len(output):
@@ -946,18 +946,47 @@ def reconstruct_elf(
 
         # CET PLT: GOT → PLT[n] start (endbr64 landing pad)
         # Classic PLT: GOT → PLT[n]+6 (push stub after the jmp)
-        stub_offset = 0x10 if is_cet_plt else 0x16
+        first_stub = 0x10 if is_cet_plt else 0x16
 
-        for i in range(3, got_entries):
-            off = got_file_off + i * ptr_size
-            if off + ptr_size <= len(output):
-                target = plt_addr + stub_offset + 0x10 * (i - 3)
+        # Parse .rela.plt / .rel.plt to get the actual GOT slot for each
+        # PLT stub instead of assuming GOT[3+i] = PLT[1+i].  The
+        # relocation entries are in PLT stub order, and each r_offset
+        # gives the exact GOT slot address that stub uses.
+        n_patched = 0
+        jmprel_off = _vaddr_to_offset(dyn_info.jmprel)
+        rel_entry_sz = dyn_info.relaent or dyn_info.relent
+        n_rels = dyn_info.pltrelsz // rel_entry_sz if rel_entry_sz else 0
+
+        if n_rels and jmprel_off + dyn_info.pltrelsz <= len(output):
+            r_off_fmt = "<Q" if is64 else "<I"
+            for i in range(n_rels):
+                ent_off = jmprel_off + i * rel_entry_sz
+                r_offset = struct.unpack_from(r_off_fmt, output, ent_off)[0]
+
+                got_slot_off = _data_vaddr_to_offset(r_offset)
+                if got_slot_off + ptr_size > len(output):
+                    continue
+
+                target = plt_addr + first_stub + 0x10 * i
                 if is64:
-                    output[off:off + ptr_size] = _p64(target)
+                    output[got_slot_off:got_slot_off + ptr_size] = _p64(target)
                 else:
-                    output[off:off + ptr_size] = _p32(target)
+                    output[got_slot_off:got_slot_off + ptr_size] = _p32(target)
+                n_patched += 1
+        else:
+            # Fallback: linear assumption (GOT[3+i] → PLT stub i)
+            log.debug("jmprel not in output, falling back to linear GOT patching")
+            for i in range(3, got_entries):
+                off = got_file_off + i * ptr_size
+                if off + ptr_size <= len(output):
+                    target = plt_addr + first_stub + 0x10 * (i - 3)
+                    if is64:
+                        output[off:off + ptr_size] = _p64(target)
+                    else:
+                        output[off:off + ptr_size] = _p32(target)
+                    n_patched += 1
 
-        log.info("Patched %d GOT entries to point back to PLT stubs", got_entries - 3)
+        log.info("Patched %d GOT entries to point back to PLT stubs", n_patched)
     elif dyn_info and dyn_info.bind_now:
         log.info("Full RELRO binary, skipping GOT reconstruction")
 
