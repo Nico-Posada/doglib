@@ -31,10 +31,12 @@ NT_GNU_BUILD_ID = 3
 
 # ── Version string identifiers (from pwninit) ───────────────────────
 
-_VERSION_IDENTIFIERS: list[Tuple[bytes, str]] = [
-    (b"GNU C Library (Ubuntu GLIBC ", "ubuntu"),
-    (b"GNU C Library (Ubuntu EGLIBC ", "ubuntu"),
-    (b"GNU C Library (Debian GLIBC ", "debian"),
+_VERSION_IDENTIFIERS: list[Tuple[bytes, str, str]] = [
+    (b"GNU C Library (Ubuntu GLIBC ", "ubuntu", "libc"),
+    (b"GNU C Library (Ubuntu EGLIBC ", "ubuntu", "libc"),
+    (b"GNU C Library (Debian GLIBC ", "debian", "libc"),
+    (b"ld.so (Ubuntu GLIBC ",         "ubuntu", "ld"),
+    (b"ld.so (Debian GLIBC ",         "debian", "ld"),
 ]
 
 
@@ -118,17 +120,22 @@ def find_build_id(leak, libc_base: int) -> Optional[str]:
     return None
 
 
-def find_version_string(data: bytes) -> Optional[Tuple[str, str]]:
+def find_version_string(data: bytes) -> Optional[Tuple[str, str, str]]:
     """Scan raw bytes for a glibc version string.
 
+    Works on both libc and ld binaries — the ld linker embeds a similar
+    version string starting with ``ld.so (`` instead of ``GNU C Library (``.
+
     Arguments:
-        data: dumped bytes from the libc text segment
+        data: raw bytes from a glibc artifact (libc or ld)
 
     Returns:
-        (version_string, distro) tuple, e.g. ("2.31-0ubuntu9.2", "ubuntu"),
-        or None if not found.
+        ``(version, distro, kind)`` tuple, e.g.
+        ``("2.31-0ubuntu9.2", "ubuntu", "libc")``, where *kind* is
+        ``"libc"`` or ``"ld"``.  Returns ``None`` if no version string
+        is found.
     """
-    for identifier, distro in _VERSION_IDENTIFIERS:
+    for identifier, distro, kind in _VERSION_IDENTIFIERS:
         idx = data.find(identifier)
         if idx < 0:
             continue
@@ -137,8 +144,8 @@ def find_version_string(data: bytes) -> Optional[Tuple[str, str]]:
         if end < 0:
             continue
         version = data[start:end].decode("ascii", errors="replace")
-        log.success("Found libc version string: %s (%s)", version, distro)
-        return version, distro
+        log.success("Found glibc version string: %s (%s, %s)", version, distro, kind)
+        return version, distro, kind
     return None
 
 
@@ -325,7 +332,6 @@ def _download_deb(deb_name: str, distro: str, version: str, w, pkg: str = "libc6
         w.status("querying snapshot.debian.org...")
         snapshot_url = _query_debian_snapshot(deb_name, version, pkg=pkg)
         if snapshot_url:
-            print(f"trying {snapshot_url}")
             w.status(snapshot_url)
             return wget(snapshot_url, timeout=60)
 
