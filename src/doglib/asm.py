@@ -40,12 +40,3 @@ def dis_arm(code, addr=0):
 
 def dis_arm64(code, addr=0):
     return cs_disasm_str(CS_ARCH_ARM64, CS_MODE_ARM, code, addr)
-    
-
-import pwnlib.shellcraft as shcraft
-
-def get_context(name):
-    return getattr(shcraft,name)
-
-def runcmd(cmd,ctx="amd64"):
-    return asm(get_context(ctx).linux.execve('/bin/sh',['/bin/sh','-c',cmd],0))

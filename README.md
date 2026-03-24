@@ -1,52 +1,14 @@
 # dogtools
 things i personally wished were in pwntools but aren't  
-code is a mix of GPT slop and my own stuff
-
-## cli
-installed under the 'dog' binary
-### solve
-drop-in replacement for pwninit's template generator
-### fetchld
-given libc, go and find ld
-### fetchdbg
-given libc (and optionally ld), search debian/ubuntu repos for debug symbols to unstrip both
-  
-`fetchld` and `fetchdbg` both check important places pwninit doesn't
-
-## misc
-random stuff. worth reading yourself.
-
-## io_file
-advanced file stream generator, useful for quick FSOP  
-stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/pwncli/utils/io_file.py) with a few personal additions at the bottom
-
-## heap
-stuff relevant for heap exploitation. currently:
-- ptr mangling / demangling
-- fake tcache struct crafter
-
-## fmt
-failed attempt at additional format string utilities. might revisit this in the future
-
-## ezrop
-stuff to make ropping faster
-only notable function right now is `quickrop` which sets up a system('/bin/sh') chain
-
-## dumpelf
-attempt blind elf dumping over remote
-if you have an infinite arbitrary read vuln you can define as a function `leak`, and 
-some leaked pointer into the program `leaked_ptr`, you can do this:
+code is a mix of GPT slop and my own stuff  
+will (hopefully) never need more than what pwntools already installs
 ```python
-from doglib.dumpelf import DumpELF
-
-d = DumpELF(leak, leaked_ptr)
-d.dump("./target_dump.elf")  # write reconstructed binary. itll run! maybe.
-libc = d.libc # (attempt) getting libc, slightly better than dynelf
+from dog import *
+# start cooking
 ```
 
-
 ## extelf
-very useful claude-slopped extension to pwntools `ELF`.  
+very useful extension to pwntools `ELF`.  
 by parsing debuginfo, work with structs in python:
 ```python
 libc = ExtendedELF('./libc.so.6')
@@ -78,20 +40,27 @@ j[1][1] # 0x21
 j[2] = [3,4,5]
 bytes(j) # b'\x18\x00\x00\x00\x18\x00\x00\x00.....'
 ```
-*warning*: this module is nearly 2000+ lines of AI code that i have not thoroughly reviewed.  
-even on opus 4.6 i am still finding myself fixing simple issues.  
-but i am trying my best. 
 
-### dwarf_parser_rs
-optional rust-based parser to make ExtELF faster  
-the parser has to look at ALL debug info objects and determine which ones are relevant to us,
-which on big libcs can be 1m+ objects. we can cache this to make it near-instant after the first parse,
-but that first parse can still take some time (~20s). this uses [gimli](github.com/gimli-rs/gimli) to make
-that first parse less than a second.
 
-## asm
-basic assembler/disassembler stuff because pwntools is ungodly slow  
-`asm_x64`, `asm_x86`, `dis_x64`, etc etc
+## dumpelf
+attempt blind elf dumping over remote  
+if you have an infinite arbitrary read vuln:  
+you can define as a function `leak`, some leaked pointer into the program `leaked_ptr`, then:
+```python
+from doglib.dumpelf import DumpELF
+
+# return 1+ bytes at 'addr'
+def leak(addr):
+    pass
+
+d = DumpELF(leak, leaked_ptr)
+d.dump("./target_dump.elf")  # write reconstructed binary. itll run! maybe.
+libc = d.libc # (attempt) getting libc, slightly better than dynelf
+```
+*warning*: very very hacky barely works on x64/x86
+
+## misc
+random stuff. worth reading yourself.
 
 ## muney
 house of muney payload generator
@@ -105,4 +74,52 @@ payload = house_of_muney(libc,{
 })
 print(payload) # b'\x00\x00\x00\x00....'
 ```
+
+## cli
+installed under the 'dog' binary
+### solve
+drop-in replacement for pwninit's template generator
+### fetchld
+given libc, search debian/ubuntu repos for ld
+### fetchdbg
+given libc (and optionally ld), search debian/ubuntu repos for debug symbols to unstrip both
+  
+`fetchld` and `fetchdbg` both check important places pwninit doesn't
+
+
+## asm
+basic assembler/disassembler stuff because pwntools is ungodly slow  
+`asm_x64`, `asm_x86`, `dis_x64`, etc etc
+
+## io_file
+advanced file stream generator, useful for quick FSOP  
+stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/pwncli/utils/io_file.py) with a few personal additions at the bottom
+
+## heap
+stuff relevant for heap exploitation. currently:
+- ptr mangling / demangling
+- fake tcache struct crafter
+
+## dwarf_parser_rs
+optional rust-based parser to make ExtELF faster  
+the parser has to look at ALL debug info objects and determine which ones are relevant to us,
+which on big libcs can be 1m+ objects. we can cache this to make it near-instant after the first parse,
+but that first parse can still take some time (~20s). this uses [gimli](github.com/gimli-rs/gimli) to make
+that first parse less than a second.
+
+## ezrop
+stuff to make ropping faster  
+only notable function right now is `quickrop` which sets up a system('/bin/sh') chain
+
+## fmt
+failed attempt at additional format string utilities. might revisit this in the future
+
+
+
+
+
+
+
+
+
 
