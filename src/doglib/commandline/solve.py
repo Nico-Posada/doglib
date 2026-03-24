@@ -54,7 +54,7 @@ def main(args) -> None:
 
     template = template_path.read_text()
     try:
-        stub = template.format_map({
+        stub = template.format_map({ # zomg format string bug..
             "bindings": bindings,
             "bin_name": "exe",
             "proc_args": "[exe.path]",
