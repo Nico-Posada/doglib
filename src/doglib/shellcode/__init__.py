@@ -38,7 +38,15 @@ def _sc(ctx: str = "amd64"):
 # ---------------------------------------------------------------------------
 # Blobs
 # ---------------------------------------------------------------------------
-
+"""
+shellcode for tiny shell, useful for seccomp jails
+- cat: read files
+- ls: list files
+- cd: change directory
+- exit: quit
+- anything else is treated as a command to execute
+    - type 'tg' to use execveat() over execve()
+"""
 minshell = ShellcodeSet("minshell")
 
 # ---------------------------------------------------------------------------
