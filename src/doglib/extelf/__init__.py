@@ -26,3 +26,6 @@ def __getattr__(name):
             _CTYPES_SINGLETONS[name] = inst
         return inst
     raise AttributeError(name)
+
+
+__all__ = ["ExtendedELF", "ExtELF", "CHeader", "CInline"]

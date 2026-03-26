@@ -138,3 +138,5 @@ if __name__ == "__main__":
     
     leaks = "(nil).0x1.0x2.0xdeadbeef".split('.')
     log_printf(leaks)
+
+__all__ = ["logx", "log_printf"]

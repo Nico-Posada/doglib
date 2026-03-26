@@ -13,11 +13,6 @@
 from pwn import FileStructure, context, error, flat, pack, unpack
 # from .misc import setcontext
 
-__all__ = [
-    "IO_FILE_plus_struct",
-    "payload_replace"
-]
-
 class IO_FILE_plus_struct(FileStructure):
 
     def __init__(self, null=0):
@@ -449,3 +444,6 @@ def hoa2(libc: 'ELF', file='stdout'):
 	libc.sym[f'_IO_2_1_{file}_'],
 	libc.sym['_IO_wfile_jumps'],
 	libc.sym['system'])
+
+
+__all__ = ["IO_FILE_plus_struct", "hoa2"]

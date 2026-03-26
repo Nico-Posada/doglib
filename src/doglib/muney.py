@@ -166,3 +166,6 @@ def house_of_muney(glibc: "ELF", resolve: Dict[str, int]) -> bytes:
             payload[off : off + sym_entry_size] = raw
 
     return bytes(payload)
+
+
+__all__ = ["house_of_muney"]

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from typing import Iterator, Tuple, Union
@@ -114,3 +113,4 @@ class Tcache:
         return f"Tcache(pointer_size={self.pointer_size}, endian='{self.endian}', bins={self.max_bins}): {summary}"
 
 
+__all__ = ["protect_ptr", "reveal_ptr", "Tcache"]

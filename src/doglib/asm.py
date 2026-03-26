@@ -82,3 +82,5 @@ class _AsmDis:
 
 kasm = _AsmDis(_make_asm, 0)
 cdis = _AsmDis(_make_dis, 2)
+
+__all__ = ["kasm", "cdis"]

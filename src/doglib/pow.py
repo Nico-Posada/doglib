@@ -159,3 +159,6 @@ def verify_pow(challenge, solution):
     (y,) = _decode_challenge(solution)
     res = _sloth_square(y, diff, MODULUS)
     return x == res or MODULUS - x == res
+
+
+__all__ = ["solve_pow", "verify_pow", "get_challenge"]

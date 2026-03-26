@@ -265,3 +265,21 @@ def set_alias(p):
 
 def i2b(n: int):
     return str(n).encode()
+
+
+__all__ = [
+    "proc_maps_parser",
+    "ror",
+    "rol",
+    "mangle",
+    "demangle",
+    "mangle_kpt",
+    "fake_exit_function",
+    "setcontext",
+    "setcontext32",
+    "house_of_context",
+    "pack_file",
+    "find_libc_leak",
+    "set_alias",
+    "i2b",
+]

@@ -1,73 +1,16 @@
 from pwn import *
 
-# ── misc ────────────────────────────────────────────────────────────────────
-from doglib.misc import (
-    proc_maps_parser,
-    ror,
-    rol,
-    mangle,
-    demangle,
-    fake_exit_function,
-    setcontext,
-    setcontext32,
-    house_of_context,
-    pack_file,
-    find_libc_leak,
-    set_alias,
-    i2b,
-)
-
-# ── heap ─────────────────────────────────────────────────────────────────────
-from doglib.heap import (
-    protect_ptr,
-    reveal_ptr,
-    Tcache,
-)
-
-# ── io_file ──────────────────────────────────────────────────────────────────
-from doglib.io_file import (
-    IO_FILE_plus_struct,
-    hoa2,
-)
-
-# ── muney ────────────────────────────────────────────────────────────────────
-from doglib.muney import house_of_muney
-
-# ── ezrop ────────────────────────────────────────────────────────────────────
-from doglib.ezrop import quickrop
-
-# ── asm ──────────────────────────────────────────────────────────────────────
-from doglib.asm import kasm, cdis
-
-# ── shellcode ────────────────────────────────────────────────────────────────
-from doglib.shellcode import (
-    minshell,
-    run,
-    runcmd,
-)
-
-# ── pow ──────────────────────────────────────────────────────────────────────
-from doglib.pow import solve_pow, verify_pow, get_challenge
-
-# ── log ──────────────────────────────────────────────────────────────────────
-from doglib.log import logx, log_printf
-
-# ── dumpelf ──────────────────────────────────────────────────────────────────
-from doglib.dumpelf import DumpELF
-
-# ── extelf ───────────────────────────────────────────────────────────────────
-from doglib.extelf import (
-    # DWARFAddress,
-    # DWARFArray,
-    # DWARFEnum,
-    # DWARFCrafter,
-    # DWARFArrayCrafter,
-    ExtendedELF,
-    CHeader,
-    CInline,
-    ExtELF,
-    # CTypes,
-)
+from doglib.misc import *
+from doglib.heap import *
+from doglib.io_file import *
+from doglib.muney import *
+from doglib.ezrop import *
+from doglib.asm import *
+from doglib.shellcode import *
+from doglib.pow import *
+from doglib.log import *
+from doglib.dumpelf import *
+from doglib.extelf import *
 
 # C / C32 / C64 are lazy singletons in doglib.extelf (they spin up GCC on first
 # access, so we keep them lazy).  They are NOT included in "from dog import *"

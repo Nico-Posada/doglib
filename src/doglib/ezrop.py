@@ -20,3 +20,6 @@ def quickrop(progs,ret=False,badchars=b""):
         
     r.system(binsh)
     return r.chain()
+
+
+__all__ = ["quickrop"]
