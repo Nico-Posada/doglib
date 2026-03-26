@@ -115,11 +115,11 @@ stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/
 ## doglib_rs
 optional rust extensions to make certain doglib features MUCH faster. not installed by default, needs maturin
 ### dwarf_parser
-uses [gimli](https://github.com/gimli-rs/gimli) to parse debug info 20x faster
-note that this only matters on the first parse, afterwards we cache it
+uses [gimli](https://github.com/gimli-rs/gimli) to parse debug info 20x faster  
+note that this only matters on the first parse, afterwards we cache it  
 ### pow_solver
-fastest solver for [redpwn pow](https://github.com/redpwn/pow) i am aware of
-2nd place is [this](https://anemato.de/blog/kctf-vdf) which is ~10% slower
+fastest solver for [redpwn/kctf pow](https://github.com/redpwn/pow) i am aware of  
+2nd place is [this](https://anemato.de/blog/kctf-vdf) which is ~10% slower  
 
 ## heap
 stuff relevant for heap exploitation. currently:

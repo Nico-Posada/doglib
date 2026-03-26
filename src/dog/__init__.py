@@ -1,4 +1,3 @@
-# from dog import * — brings in pwntools + all doglib goodies in one shot.
 from pwn import *
 
 # ── misc ────────────────────────────────────────────────────────────────────
@@ -14,6 +13,8 @@ from doglib.misc import (
     house_of_context,
     pack_file,
     find_libc_leak,
+    set_alias,
+    i2b,
 )
 
 # ── heap ─────────────────────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ from doglib.heap import (
 # ── io_file ──────────────────────────────────────────────────────────────────
 from doglib.io_file import (
     IO_FILE_plus_struct,
+    hoa2,
 )
 
 # ── muney ────────────────────────────────────────────────────────────────────
