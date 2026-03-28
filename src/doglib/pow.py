@@ -160,5 +160,10 @@ def verify_pow(challenge, solution):
     res = _sloth_square(y, diff, MODULUS)
     return x == res or MODULUS - x == res
 
+def do_pow(p: 'pwnlib.tubes.tube'):
+    """given a tube, receive and solve the pow"""
+    data = p.recvregex(br'(s\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+)\n', capture=True)
+    chal = data.group(1).strip()
+    p.sendline(solve_pow(chal))
 
-__all__ = ["solve_pow", "verify_pow", "get_challenge"]
+__all__ = ["solve_pow", "verify_pow", "get_challenge", "do_pow"]
