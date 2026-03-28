@@ -537,12 +537,18 @@ class ExtendedELF(ELF):
         unwrapped = self._unwrap_type(die)
 
         array_suffix = ''
+        ptr_depth = 0
         if unwrapped and unwrapped.tag == 'DW_TAG_array_type':
             dims = self._get_array_subranges(unwrapped)
             array_suffix = dims_str(dims)
             elem_die = self._get_die_from_attr(unwrapped, 'DW_AT_type')
             if elem_die:
                 unwrapped = self._unwrap_type(elem_die)
+
+        while unwrapped and unwrapped.tag == 'DW_TAG_pointer_type':
+            ptr_depth += 1
+            pointee = self._get_die_from_attr(unwrapped, 'DW_AT_type')
+            unwrapped = self._unwrap_type(pointee) if pointee else None
 
         if not unwrapped or unwrapped.tag not in STRUCT_TAGS:
             raise ValueError(f"'{type_name}' is not a struct/union type.")
@@ -560,6 +566,8 @@ class ExtendedELF(ELF):
         size_label = f"{total_size} bytes"
         if array_suffix:
             size_label += f", element of {array_suffix}"
+        if ptr_depth:
+            size_label += f", pointee of {'*' * ptr_depth}"
         print(f"{label} {type_name} ({size_label}):")
         print(f"  {'offset':<8} {'size':<6} {'type':<28} {'name'}")
         print(f"  {'------':<8} {'----':<6} {'----':<28} {'----'}")
