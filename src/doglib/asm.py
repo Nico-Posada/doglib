@@ -1,30 +1,34 @@
 """
 Assembly/disassembly functions because pwntools is freakishly slow.
 
+Arch names match pwntools' ``context.arch`` values where supported.
+
 Usage::
 
     from doglib.asm import kasm, cdis
 
-    kasm.x64("nop; ret")
+    kasm.amd64("nop; ret")
     cdis.arm(shellcode_bytes)
 """
 
 # Each entry: (keystone arch, keystone mode(s), capstone arch, capstone mode(s))
 # Mode can be a single string or a tuple of strings OR'd together at call time.
 _ARCHES = {
-    "x64":     ("KS_ARCH_X86",   "KS_MODE_64",
+    "amd64":   ("KS_ARCH_X86",   "KS_MODE_64",
                 "CS_ARCH_X86",   "CS_MODE_64"),
-    "x86":     ("KS_ARCH_X86",   "KS_MODE_32",
+    "i386":    ("KS_ARCH_X86",   "KS_MODE_32",
                 "CS_ARCH_X86",   "CS_MODE_32"),
     "arm":     ("KS_ARCH_ARM",   "KS_MODE_ARM",
                 "CS_ARCH_ARM",   "CS_MODE_ARM"),
-    "arm64":   ("KS_ARCH_ARM64", "KS_MODE_LITTLE_ENDIAN",
+    "thumb":   ("KS_ARCH_ARM",   "KS_MODE_THUMB",
+                "CS_ARCH_ARM",   "CS_MODE_THUMB"),
+    "aarch64": ("KS_ARCH_ARM64", "KS_MODE_LITTLE_ENDIAN",
                 "CS_ARCH_ARM64", "CS_MODE_ARM"),
     "mips":    ("KS_ARCH_MIPS",  ("KS_MODE_MIPS32", "KS_MODE_BIG_ENDIAN"),
                 "CS_ARCH_MIPS",  ("CS_MODE_MIPS32", "CS_MODE_BIG_ENDIAN")),
     "mipsel":  ("KS_ARCH_MIPS",  ("KS_MODE_MIPS32", "KS_MODE_LITTLE_ENDIAN"),
                 "CS_ARCH_MIPS",  ("CS_MODE_MIPS32", "CS_MODE_LITTLE_ENDIAN")),
-    "ppc":     ("KS_ARCH_PPC",   ("KS_MODE_PPC32",  "KS_MODE_BIG_ENDIAN"),
+    "powerpc": ("KS_ARCH_PPC",   ("KS_MODE_PPC32",  "KS_MODE_BIG_ENDIAN"),
                 "CS_ARCH_PPC",   ("CS_MODE_32",      "CS_MODE_BIG_ENDIAN")),
     "sparc":   ("KS_ARCH_SPARC", ("KS_MODE_SPARC32", "KS_MODE_BIG_ENDIAN"),
                 "CS_ARCH_SPARC", "CS_MODE_BIG_ENDIAN"),
@@ -75,6 +79,9 @@ class _AsmDis:
             entry = _ARCHES[name]
             self._cache[name] = self._make(entry[self._start], entry[self._start + 1])
         return self._cache[name]
+    
+    def __getitem__(self, name: str):
+        return self.__getattr__(name)
 
     def __repr__(self):
         return f"{self.__class__.__name__}(arches={list(_ARCHES)})"
