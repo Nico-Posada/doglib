@@ -11,7 +11,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Dict
 
 if TYPE_CHECKING:
-    from pwn import ELF
+    from pwnlib.elf.elf import ELF
 
 
 def _dl_new_hash(name: str) -> int:

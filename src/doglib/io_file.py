@@ -9,9 +9,13 @@
 @Desc    : Extension for FileStructure in pwntools and define useful IO_FILE related methods
 '''
 
+from pwnlib.log import getLogger
+from pwnlib.context import context
+from pwnlib.filepointer import FileStructure
+from pwnlib.util.packing import flat, pack, unpack
 
-from pwn import FileStructure, context, error, flat, pack, unpack
-# from .misc import setcontext
+log = getLogger("pwnlib.exploit")
+error = log.error
 
 class IO_FILE_plus_struct(FileStructure):
 

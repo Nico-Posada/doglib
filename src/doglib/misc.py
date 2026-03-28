@@ -5,6 +5,10 @@ from pwnlib.rop.srop import SigreturnFrame
 from pwnlib.util.packing import p64, p32, p16, flat
 from .io_file import IO_FILE_plus_struct
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from pwnlib.elf.elf import ELF
+
 def proc_maps_parser(data):
     """
     Read /proc/self/maps, return a clean mapping.
@@ -79,7 +83,7 @@ def setcontext(regs, addr):
     })
 
 
-def setcontext32(libc: ELF, **kwargs) -> (int, bytes):
+def setcontext32(libc: 'ELF', **kwargs) -> (int, bytes):
     got = libc.address + libc.dynamic_value_by_tag("DT_PLTGOT")
     plt_trampoline = libc.address + libc.get_section_by_name(".plt").header.sh_addr
     return got, flat(
@@ -267,7 +271,6 @@ __all__ = [
     "setcontext",
     "setcontext32",
     "house_of_context",
-    "pack_file",
     "find_libc_leak",
     "set_alias",
     "i2b",
