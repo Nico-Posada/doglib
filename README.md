@@ -67,7 +67,8 @@ d = DumpELF(leak, leaked_ptr)
 d.dump("./target_dump.elf")  # write reconstructed binary. itll run! maybe.
 libc = d.libc # (attempt) getting libc, slightly better than dynelf
 ```
-*warning*: very very hacky barely works on x64/x86
+writeup using this on a real ctf challenge at [docs/dumpelf_writeup.md](dumpelf_writeup.md)
+*warning*: very very hacky barely works on x64/x86. use as a last resort!
 
 ## misc
 random stuff. worth reading yourself.
@@ -121,7 +122,7 @@ logx(libc.address, libc.sym['system'])
 
 ## asm
 basic assembler/disassembler stuff because pwntools is ungodly slow  
-access like `casm.x64` / or `kdis.amd64`
+access like `kasm.amd64` / or `cdis.arm`
 
 ## io_file
 advanced file stream generator, useful for quick FSOP  
