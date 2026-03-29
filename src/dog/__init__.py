@@ -6,13 +6,14 @@ from doglib.io_file import *
 from doglib.muney import *
 from doglib.ezrop import *
 from doglib.asm import *
-from doglib.shellcode import *
 from doglib.pow import *
 from doglib.log import *
 from doglib.dumpelf import *
 from doglib.extelf import *
 import doglib._hijack
+import doglib.shellcode as shellcode
 
+# ctypes imports are explicit since they use gcc
 from doglib import extelf as _extelf
 def __getattr__(name):
     if name in ("C", "C32", "C64"):
