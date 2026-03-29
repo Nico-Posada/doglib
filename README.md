@@ -5,6 +5,7 @@ from dog import *
 # start cooking
 ```
 
+
 ## extelf
 very useful extension to pwntools `ELF`.  
 by parsing debuginfo, work with structs in python:
@@ -72,10 +73,12 @@ libc = d.libc # (attempt) getting libc, slightly better than dynelf
 random stuff. worth reading yourself.
 
 ## pow
-fastest pow solver for kctf/redpwn to my knowledge
+fastest solver for kctf/redpwn pow to my knowledge
 ```python
-from dog import solve_pow
-solution = solve_pow("s.AAATiA==.c5JzfKLC099PHb3WLBaz1g==")
+from dog import do_pow
+p = remote("whatever.pwn.local",11037)
+do_pow(p) # auto-extracts and solves pow
+# ... continue exploiting ...
 ```
 auto-selects the fastest backend installed, rust (70x) <-> gmpy2 (8x) <-> python (1x)
 

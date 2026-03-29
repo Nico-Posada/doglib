@@ -165,5 +165,6 @@ def do_pow(p: 'pwnlib.tubes.tube'):
     data = p.recvregex(br'(s\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+)\n', capture=True)
     chal = data.group(1).strip()
     p.sendline(solve_pow(chal))
+    return p # might aswell
 
 __all__ = ["solve_pow", "verify_pow", "get_challenge", "do_pow"]
