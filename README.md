@@ -74,14 +74,14 @@ writeup using this on a real ctf challenge at [docs/dumpelf_writeup.md](dumpelf_
 random stuff. worth reading yourself.
 
 ## pow
-fastest solver for kctf/redpwn pow to my knowledge
+semi-universal CTF proof-of-work solver with speed in mind:
 ```python
 from dog import do_pow
 p = remote("whatever.pwn.local",11037)
-do_pow(p) # auto-extracts and solves pow
+do_pow(p) # auto-detects POW format, solves it, and sends the answer
 # ... continue exploiting ...
 ```
-auto-selects the fastest backend installed, rust (70x) <-> gmpy2 (8x) <-> python (1x)
+currently the fastest solver of kctf/redpwn-based POWs, and decent speeds for hash-based ones
 
 ## muney
 [house of muney](https://maxwelldulin.com/BlogPost/House-of-Muney-Heap-Exploitation) payload generator
@@ -149,8 +149,9 @@ optional rust extensions to make certain doglib features MUCH faster. not instal
 uses [gimli](https://github.com/gimli-rs/gimli) to parse debug info 20x faster  
 note that this only matters on the first parse, afterwards we cache it  
 ### pow_solver
-fastest solver for [redpwn/kctf pow](https://github.com/redpwn/pow) i am aware of  
-2nd place is [this](https://anemato.de/blog/kctf-vdf) which is ~10% slower  
+two proof-of-work solvers in rust
+- sloth: fastest solver for [redpwn/kctf pow](https://github.com/redpwn/pow) i am aware of. 2nd place is [this](https://anemato.de/blog/kctf-vdf) which is ~10% slower
+- hash: pretty fast bruteforcer for "find hash with N leading zeros"-based POWs.
 
 ## heap
 stuff relevant for heap exploitation. currently:

@@ -1,16 +1,10 @@
 """
-Proof-of-work solver for kctf/redpwn-style Sloth VDF challenges.
+Sloth VDF proof-of-work internals.
 
 Backends (in priority order):
-  1. doglib_rs.pow_solver  — AVX512 IFMA Rust implementation (~8x faster than gmpy2)
-  2. gmpy2                 — C-backed arbitrary precision (~8x faster than pure Python)
-  3. Pure Python           — works everywhere, ~70x slower than doglib_rs
-
-Usage:
-    from doglib.pow import solve_pow, verify_pow, get_challenge
-
-    solution = solve_pow("s.AAATiA==.c5JzfKLC099PHb3WLBaz1g==")
-    assert verify_pow(challenge, solution)
+  1. doglib_rs.pow_solver  -- AVX512 IFMA Rust implementation (~8x faster than gmpy2)
+  2. gmpy2                 -- C-backed arbitrary precision (~8x faster than pure Python)
+  3. Pure Python           -- works everywhere, ~70x slower than doglib_rs
 """
 
 import base64
@@ -20,10 +14,6 @@ import sys
 VERSION = b"s"
 MODULUS = 2**1279 - 1
 CHALSIZE = 2**128
-
-# --------------------------------------------------------------------------- #
-# Backend selection
-# --------------------------------------------------------------------------- #
 
 _BACKEND = "python"
 
@@ -53,15 +43,6 @@ elif _BACKEND == "gmpy2":
     )
 
 
-def backend():
-    """Return the name of the active solver backend."""
-    return _BACKEND
-
-
-# --------------------------------------------------------------------------- #
-# Encoding helpers
-# --------------------------------------------------------------------------- #
-
 def _encode_number(num):
     size = (num.bit_length() // 24) * 3 + 3
     return base64.b64encode(num.to_bytes(size, "big"))
@@ -81,10 +62,6 @@ def _decode_challenge(chal):
 def _encode_challenge(arr):
     return b".".join([VERSION] + [_encode_number(v) for v in arr])
 
-
-# --------------------------------------------------------------------------- #
-# Sloth VDF primitives
-# --------------------------------------------------------------------------- #
 
 def _python_sloth_root(x, diff, p):
     exponent = (p + 1) // 4
@@ -126,32 +103,28 @@ def _sloth_square(x, diff, p):
     return _python_sloth_square(x, diff, p)
 
 
-# --------------------------------------------------------------------------- #
-# Public API
-# --------------------------------------------------------------------------- #
-
-def get_challenge(difficulty):
-    """Generate a fresh PoW challenge at the given difficulty."""
+def sloth_challenge(difficulty):
+    """Generate a fresh Sloth VDF PoW challenge at the given difficulty."""
     x = secrets.randbelow(CHALSIZE)
     return _encode_challenge([difficulty, x])
 
 
-def solve_pow(challenge):
-    """Solve a PoW challenge, returning the solution as bytes.
+def solve_sloth(challenge):
+    """Solve a Sloth VDF PoW challenge, returning the solution as bytes.
 
     Automatically picks the fastest available backend.
     Accepts both str and bytes.
     """
     challenge = challenge.encode() if isinstance(challenge, str) else challenge
     if _rs_pow is not None:
-        return _rs_pow.solve(challenge)
+        return _rs_pow.solve_sloth(challenge)
 
     diff, x = _decode_challenge(challenge)
     y = _sloth_root(x, diff, MODULUS)
     return _encode_challenge([y])
 
 
-def verify_pow(challenge, solution):
+def verify_sloth(challenge, solution):
     """Verify that *solution* is correct for *challenge*. Accepts str or bytes."""
     challenge = challenge.encode() if isinstance(challenge, str) else challenge
     solution = solution.encode() if isinstance(solution, str) else solution
@@ -159,12 +132,3 @@ def verify_pow(challenge, solution):
     (y,) = _decode_challenge(solution)
     res = _sloth_square(y, diff, MODULUS)
     return x == res or MODULUS - x == res
-
-def do_pow(p: 'pwnlib.tubes.tube'):
-    """given a tube, receive and solve the pow"""
-    data = p.recvregex(br'(s\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+)\n', capture=True)
-    chal = data.group(1).strip()
-    p.sendline(solve_pow(chal))
-    return p # might aswell
-
-__all__ = ["solve_pow", "verify_pow", "get_challenge", "do_pow"]

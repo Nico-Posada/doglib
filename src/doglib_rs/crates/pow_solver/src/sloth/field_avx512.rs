@@ -5,7 +5,7 @@
 //! const generics. Sliding windows are constructed from registers via valignq to
 //! avoid store-forwarding stalls from unaligned memory loads.
 
-use crate::field::Fe1279;
+use super::field::Fe1279;
 
 const LIMBS: usize = 25;
 const MASK52: u64 = (1u64 << 52) - 1;

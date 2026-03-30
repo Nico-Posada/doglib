@@ -1,4 +1,4 @@
-use pow_solver::solver;
+use pow_solver::sloth::solver;
 use std::time::Instant;
 
 fn main() {

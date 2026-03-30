@@ -6,15 +6,15 @@ import secrets
 import pytest
 
 from doglib.pow import (
-    solve_pow,
-    verify_pow,
-    get_challenge,
-    backend,
+    solve_sloth,
+    verify_sloth,
+    sloth_challenge,
     _decode_challenge,
     _encode_challenge,
     _sloth_square,
     MODULUS,
 )
+from doglib.pow._sloth import _BACKEND
 
 # ---------------------------------------------------------------------------
 # Known-answer tests
@@ -38,31 +38,31 @@ EXPECTED_D50_RUST = (
 
 
 def test_solve_difficulty_1():
-    result = solve_pow(CHALLENGE_D1)
-    assert verify_pow(CHALLENGE_D1, result)
+    result = solve_sloth(CHALLENGE_D1)
+    assert verify_sloth(CHALLENGE_D1, result)
 
 
 def test_solve_difficulty_50():
-    result = solve_pow(CHALLENGE_D50)
-    assert verify_pow(CHALLENGE_D50, result)
+    result = solve_sloth(CHALLENGE_D50)
+    assert verify_sloth(CHALLENGE_D50, result)
 
 
 def test_exact_output_rust():
     """When the Rust backend is active, we expect a specific root."""
-    if backend() != "rust":
+    if _BACKEND != "rust":
         pytest.skip("Rust backend not available")
-    assert solve_pow(CHALLENGE_D1) == EXPECTED_D1_RUST
-    assert solve_pow(CHALLENGE_D50) == EXPECTED_D50_RUST
+    assert solve_sloth(CHALLENGE_D1) == EXPECTED_D1_RUST
+    assert solve_sloth(CHALLENGE_D50) == EXPECTED_D50_RUST
 
 
 def test_verify_known():
-    assert verify_pow(CHALLENGE_D1, EXPECTED_D1_RUST)
-    assert verify_pow(CHALLENGE_D50, EXPECTED_D50_RUST)
+    assert verify_sloth(CHALLENGE_D1, EXPECTED_D1_RUST)
+    assert verify_sloth(CHALLENGE_D50, EXPECTED_D50_RUST)
 
 
 def test_solve_bad_input():
     with pytest.raises((ValueError, Exception)):
-        solve_pow("x.bad.input")
+        solve_sloth("x.bad.input")
 
 
 # ---------------------------------------------------------------------------
@@ -71,18 +71,18 @@ def test_solve_bad_input():
 
 @pytest.mark.parametrize("difficulty", [1, 2, 5, 10, 50])
 def test_roundtrip(difficulty):
-    challenge = get_challenge(difficulty)
-    solution = solve_pow(challenge)
-    assert verify_pow(challenge, solution), (
+    challenge = sloth_challenge(difficulty)
+    solution = solve_sloth(challenge)
+    assert verify_sloth(challenge, solution), (
         f"verify failed for d={difficulty}: {challenge} -> {solution}"
     )
 
 
 def test_roundtrip_d500():
     """Higher difficulty round-trip to stress the squaring kernel."""
-    challenge = get_challenge(500)
-    solution = solve_pow(challenge)
-    assert verify_pow(challenge, solution)
+    challenge = sloth_challenge(500)
+    solution = solve_sloth(challenge)
+    assert verify_sloth(challenge, solution)
 
 
 # ---------------------------------------------------------------------------
@@ -92,17 +92,17 @@ def test_roundtrip_d500():
 def test_random_challenges_d1():
     """Generate 500 random challenges at d=1, solve and verify each."""
     for _ in range(500):
-        chal = get_challenge(1)
-        sol = solve_pow(chal)
-        assert verify_pow(chal, sol), f"failed: {chal}"
+        chal = sloth_challenge(1)
+        sol = solve_sloth(chal)
+        assert verify_sloth(chal, sol), f"failed: {chal}"
 
 
 def test_random_challenges_d10():
     """Generate 300 random challenges at d=10, solve and verify each."""
     for _ in range(300):
-        chal = get_challenge(10)
-        sol = solve_pow(chal)
-        assert verify_pow(chal, sol), f"failed: {chal}"
+        chal = sloth_challenge(10)
+        sol = solve_sloth(chal)
+        assert verify_sloth(chal, sol), f"failed: {chal}"
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +113,8 @@ def test_cross_verify_rust_vs_python():
     """Solve with the main solver, then verify the solution using
     the pure-Python squaring (not the same code path as the solver)."""
     for d in [1, 5, 25]:
-        chal = get_challenge(d)
-        sol = solve_pow(chal)
+        chal = sloth_challenge(d)
+        sol = solve_sloth(chal)
 
         diff, x = _decode_challenge(chal)
         (y,) = _decode_challenge(sol)
@@ -136,5 +136,4 @@ def test_encode_decode_roundtrip():
 
 
 def test_backend_reports():
-    b = backend()
-    assert b in ("rust", "gmpy2", "python")
+    assert _BACKEND in ("rust", "gmpy2", "python")

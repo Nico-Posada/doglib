@@ -6,3 +6,13 @@ edition = "2021"
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 base64 = "0.22"
+sha2 = "0.10"
+sha1 = "0.10"
+digest = "0.10"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "hash_pow_bench"
+harness = false

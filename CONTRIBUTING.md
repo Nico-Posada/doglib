@@ -1,4 +1,5 @@
 # contributing
+there aren't many rules to contributing (big surprise i'm not a developer) this is just to get you familiar if you wanna add your own stuff
 
 ## layout
 `tests/`: pytest tests, make some if you think your code is complex (or don't i don't care)  

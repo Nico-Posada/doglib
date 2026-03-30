@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn scalar_solve_difficulty_1() {
-        use crate::solver;
+        use crate::sloth::solver;
         let result =
             solver::solve_with("scalar", "s.AAAAAQ==.H+fPiuL32DPbfN97cpd0nA==").unwrap();
         let expected = "s.SehdFNCoMtQI4d9JBXsmzWdYk77jtb36Io5acLmjB6l/Vr1VUUsegi3CNbUf7lgUI5kGuxgdleSh+poE/BCGoAoaTNGVBC14jl+W0D7wg8R2IPDCUSTueG0JNCtJL8OeNPiReJ+CBFcqcR0Ntc9Qakzm8sZaBjGld1Rh3FK6gresUqjpnxGS4SgIg/lp/iZ+2EetM94ewJHsXghGaWQYkg==";
@@ -223,7 +223,7 @@ mod tests {
             eprintln!("skipping: CPU lacks AVX512 IFMA");
             return;
         }
-        use crate::field_avx512;
+        use crate::sloth::field_avx512;
 
         let input = [
             0x1F, 0xE7, 0xCF, 0x8A, 0xE2, 0xF7, 0xD8, 0x33, 0xDB, 0x7C, 0xDF, 0x7B,
@@ -241,7 +241,7 @@ mod tests {
             eprintln!("skipping: CPU lacks AVX512 IFMA");
             return;
         }
-        use crate::field_avx512;
+        use crate::sloth::field_avx512;
 
         let input = [
             0x1F, 0xE7, 0xCF, 0x8A, 0xE2, 0xF7, 0xD8, 0x33, 0xDB, 0x7C, 0xDF, 0x7B,
@@ -272,7 +272,7 @@ mod tests {
             eprintln!("skipping: CPU lacks AVX512 IFMA");
             return;
         }
-        use crate::solver;
+        use crate::sloth::solver;
         let result =
             solver::solve_with("avx512", "s.AAAAAQ==.H+fPiuL32DPbfN97cpd0nA==").unwrap();
         let expected = "s.SehdFNCoMtQI4d9JBXsmzWdYk77jtb36Io5acLmjB6l/Vr1VUUsegi3CNbUf7lgUI5kGuxgdleSh+poE/BCGoAoaTNGVBC14jl+W0D7wg8R2IPDCUSTueG0JNCtJL8OeNPiReJ+CBFcqcR0Ntc9Qakzm8sZaBjGld1Rh3FK6gresUqjpnxGS4SgIg/lp/iZ+2EetM94ewJHsXghGaWQYkg==";
@@ -286,7 +286,7 @@ mod tests {
             eprintln!("skipping: CPU lacks AVX512 IFMA");
             return;
         }
-        use crate::solver;
+        use crate::sloth::solver;
         let result =
             solver::solve_with("avx512", "s.AAAAMg==.H+fPiuL32DPbfN97cpd0nA==").unwrap();
         let expected = "s.O5X5tBMcDT3O2E/32edB/FqCuws5LuvMKGGAkqVc9Wak/gJmwkUpUvYWOlr9x+tsccb6/KcNCQTym1Jzclv+aXE49pu5RkukYgijK8gbuuQrfp+YIJ6OFHId2tCIAdV/QYFIrhUy1pVUZ6mGCCCRjGqMVSo6QGDAS59tKKbnGjdZYRLSku30L9GWpSx9Sdjas/PzTxOsN6rjlCBE/qgGHg==";
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn scalar_solve_difficulty_50() {
-        use crate::solver;
+        use crate::sloth::solver;
         let result =
             solver::solve_with("scalar", "s.AAAAMg==.H+fPiuL32DPbfN97cpd0nA==").unwrap();
         let expected = "s.O5X5tBMcDT3O2E/32edB/FqCuws5LuvMKGGAkqVc9Wak/gJmwkUpUvYWOlr9x+tsccb6/KcNCQTym1Jzclv+aXE49pu5RkukYgijK8gbuuQrfp+YIJ6OFHId2tCIAdV/QYFIrhUy1pVUZ6mGCCCRjGqMVSo6QGDAS59tKKbnGjdZYRLSku30L9GWpSx9Sdjas/PzTxOsN6rjlCBE/qgGHg==";

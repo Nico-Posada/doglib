@@ -1,8 +1,8 @@
-use crate::challenge::Challenge;
-use crate::field::Fe1279;
+use super::challenge::Challenge;
+use super::field::Fe1279;
 
 #[cfg(target_arch = "x86_64")]
-use crate::field_avx512;
+use super::field_avx512;
 
 /// Solve a POW challenge from raw bytes, returning solution as raw bytes.
 pub fn solve_bytes(challenge: &[u8]) -> Result<Vec<u8>, &'static str> {
