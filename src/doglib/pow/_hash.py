@@ -73,7 +73,7 @@ def _check_trailing(h, bits):
 
 
 def _do_bruteforce(prefix, algo, bits, position, charset_name, threads=None):
-    """Dispatch to Rust if available, otherwise fall back to Python."""
+    """Dispatch: Rust (with optional CUDA) → Python."""
     if _rs_pow is not None:
         result = _rs_pow.hash_bruteforce(prefix, algo, bits, position, charset_name, threads)
         return result

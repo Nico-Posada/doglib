@@ -10,6 +10,9 @@ edition = "2021"
 name = "doglib_rs"
 crate-type = ["cdylib"]
 
+[features]
+cuda = ["pow_solver/cuda"]
+
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 dwarf_parser = { path = "crates/dwarf_parser" }

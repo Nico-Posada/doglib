@@ -3,12 +3,16 @@ name = "pow_solver"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+cuda = ["dep:cudarc"]
+
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 base64 = "0.22"
 sha2 = "0.10"
 sha1 = "0.10"
 digest = "0.10"
+cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-version-from-build-system"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
