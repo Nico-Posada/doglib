@@ -107,6 +107,8 @@ drop-in replacement for pwninit's template generator
 ### `dog fetch`
 given libc/ld, search debian/ubuntu repos for the other, optionally unstrip with `--dbg`  
 this checks a few spots pwninit doesn't  
+### `dog dopow`
+connect to server, attempt to autosolve pow, drop to interactive mode
 
 ## log
 various stuff to assist in logging/debugging
