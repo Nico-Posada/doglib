@@ -1,10 +1,13 @@
 """Tests for hash brute-force PoW solvers."""
 
 import hashlib
+import random
+import secrets
 
 import pytest
 
 from doglib.pow import solve_sosette, solve_hxp, solve_hashcash, detect_and_solve
+from doglib.pow._hash import _BACKEND, _do_bruteforce, _gpu_available
 
 
 class TestSosette:
@@ -103,7 +106,7 @@ class TestAutoDetect:
         assert _has_trailing_zeros(h, 8)
 
     def test_detect_hashcash(self):
-        data = b"solve: `hashcash -mb16 test@resource`"
+        data = b'solve: `hashcash -mCb16 "test@resource"`'
         result = detect_and_solve(data)
         assert result is not None
         h = hashlib.sha1(result).digest()
@@ -141,3 +144,73 @@ def _has_trailing_zeros(h, bits):
         if h[len(h) - 1 - full] & ((1 << rem) - 1):
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Stress tests — random combination loop over all parameters
+# ---------------------------------------------------------------------------
+
+_ALGOS    = ["sha256", "sha1"]
+_POSITIONS = ["leading", "trailing"]
+_CHARSETS  = ["bytes", "printable", "alphanumeric", "hex", "numeric"]
+
+
+def _verify_suffix(prefix, algo, bits, position, suffix):
+    h = (hashlib.sha256 if algo == "sha256" else hashlib.sha1)(prefix + suffix).digest()
+    return _has_leading_zeros(h, bits) if position == "leading" else _has_trailing_zeros(h, bits)
+
+
+def test_backend_reports():
+    assert _BACKEND in ("rust", "python")
+
+
+def test_random_combinations():
+    """50 iterations over random (algo, position, bits 10-28, charset, prefix) combinations.
+
+    Bits ≥ 25 will exercise the CUDA backend when available (GPU_MIN_BITS=25).
+    Max bits capped at 19 when running on the pure-Python fallback.
+    """
+    max_bits = 19 if _BACKEND == "python" else 28
+    rng = random.Random()
+    for _ in range(50):
+        algo     = rng.choice(_ALGOS)
+        position = rng.choice(_POSITIONS)
+        bits     = rng.randint(10, max_bits)
+        charset  = rng.choice(_CHARSETS)
+        prefix   = secrets.token_bytes(rng.randint(4, 20))
+
+        result = _do_bruteforce(prefix, algo, bits, position, charset)
+        assert result is not None, (
+            f"no solution: algo={algo} pos={position} bits={bits} charset={charset}"
+        )
+        assert _verify_suffix(prefix, algo, bits, position, result), (
+            f"wrong answer: algo={algo} pos={position} bits={bits} charset={charset} "
+            f"prefix={prefix!r} suffix={result!r}"
+        )
+
+
+def test_random_combinations_gpu():
+    """Same loop but with force_gpu=True — skipped when CUDA is not available.
+
+    Forces GPU even below GPU_MIN_BITS so the kernel is exercised across
+    the full parameter space without needing high difficulty every run.
+    """
+    if not _gpu_available():
+        pytest.skip("CUDA backend not available")
+
+    rng = random.Random()
+    for _ in range(20):
+        algo     = rng.choice(_ALGOS)
+        position = rng.choice(_POSITIONS)
+        bits     = rng.randint(10, 28)
+        charset  = rng.choice(_CHARSETS)
+        prefix   = secrets.token_bytes(rng.randint(4, 16))
+
+        result = _do_bruteforce(prefix, algo, bits, position, charset, force_gpu=True)
+        assert result is not None, (
+            f"GPU returned None: algo={algo} pos={position} bits={bits} charset={charset}"
+        )
+        assert _verify_suffix(prefix, algo, bits, position, result), (
+            f"GPU wrong answer: algo={algo} pos={position} bits={bits} charset={charset} "
+            f"prefix={prefix!r} suffix={result!r}"
+        )

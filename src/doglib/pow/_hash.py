@@ -72,10 +72,19 @@ def _check_trailing(h, bits):
     return True
 
 
-def _do_bruteforce(prefix, algo, bits, position, charset_name, threads=None):
+def _gpu_available():
+    """Return True if the CUDA GPU backend is available and initialised."""
+    if _rs_pow is None:
+        return False
+    return _rs_pow.backend_info() == "cuda"
+
+
+def _do_bruteforce(prefix, algo, bits, position, charset_name, threads=None, force_gpu=False):
     """Dispatch: Rust (with optional CUDA) → Python."""
+    if force_gpu and not _gpu_available():
+        raise RuntimeError("force_gpu=True but CUDA backend is not available")
     if _rs_pow is not None:
-        result = _rs_pow.hash_bruteforce(prefix, algo, bits, position, charset_name, threads)
+        result = _rs_pow.hash_bruteforce(prefix, algo, bits, position, charset_name, threads, force_gpu)
         return result
 
     charset_map = {

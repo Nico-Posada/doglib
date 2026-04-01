@@ -14,7 +14,7 @@ fn solve_sloth(challenge: &[u8]) -> PyResult<Vec<u8>> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (prefix, algorithm, bits, position, charset, threads=None))]
+#[pyo3(signature = (prefix, algorithm, bits, position, charset, threads=None, force_gpu=false))]
 fn hash_bruteforce(
     py: Python<'_>,
     prefix: &[u8],
@@ -23,6 +23,7 @@ fn hash_bruteforce(
     position: &str,
     charset: &str,
     threads: Option<u32>,
+    force_gpu: bool,
 ) -> PyResult<Vec<u8>> {
     let algo = hash_pow::parse_algo(algorithm)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
@@ -36,11 +37,10 @@ fn hash_bruteforce(
         // Skip GPU for very low difficulty: the minimum GPU work is one full
         // kernel launch (~67M candidates, ~15ms).  Below ~23 bits the CPU
         // finds the answer faster than the GPU's minimum per-call overhead.
+        // `force_gpu` bypasses the threshold (useful for testing).
         #[cfg(feature = "cuda")]
-        if bits >= gpu::GPU_MIN_BITS {
-            let algo_str = algorithm;
-            let pos_str  = position;
-            if let Some(r) = gpu::bruteforce(prefix, algo_str, bits, pos_str, &cs) {
+        if force_gpu || bits >= gpu::GPU_MIN_BITS {
+            if let Some(r) = gpu::bruteforce(prefix, algorithm, bits, position, &cs) {
                 return Some(r);
             }
         }
