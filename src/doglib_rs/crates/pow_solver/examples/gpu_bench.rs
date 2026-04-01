@@ -1,95 +1,75 @@
-/// GPU throughput benchmark.
+/// GPU throughput benchmark — deterministic, low-variance.
 ///
-/// Runs N bruteforces with randomly-generated prefixes, then reports the
-/// mean time and estimated hash rate averaged across all runs.
+/// Instead of timing random solve attempts, fires a fixed number of kernel
+/// launches with an impossible difficulty (bits=255) so every thread always
+/// processes the full BATCH.  Total candidates / wall-time = true throughput
+/// with no search randomness.
 ///
 /// Usage (from the pow_solver crate root):
 ///   LD_LIBRARY_PATH=/usr/lib/wsl/lib \
 ///   cargo run --release --features cuda --example gpu_bench
 ///
 /// Optional env vars:
-///   GPU_BENCH_BITS=<n>         difficulty in leading zero bits (default 24)
-///   GPU_BENCH_ALGO=sha256      algorithm: sha256 or sha1 (default sha256)
+///   GPU_BENCH_ALGO=sha256        algorithm: sha256 or sha1 (default sha256)
 ///   GPU_BENCH_CHARSET=printable  charset name (default printable)
-///   GPU_BENCH_RUNS=<n>         number of samples (default 10)
+///   GPU_BENCH_SUFFIX_LEN=4       suffix length to test (default 4)
+///   GPU_BENCH_DURATION=10        target seconds to run (default 10)
 
 #[cfg(feature = "cuda")]
 fn main() {
-    let bits: u32 = std::env::var("GPU_BENCH_BITS")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(24);
     let algo = std::env::var("GPU_BENCH_ALGO")
         .unwrap_or_else(|_| "sha256".into());
     let charset_name = std::env::var("GPU_BENCH_CHARSET")
         .unwrap_or_else(|_| "printable".into());
-    let runs: usize = std::env::var("GPU_BENCH_RUNS")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+    let suffix_len: usize = std::env::var("GPU_BENCH_SUFFIX_LEN")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    let target_secs: f64 = std::env::var("GPU_BENCH_DURATION")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
 
     let charset = pow_solver::hash_pow::parse_charset(&charset_name)
         .expect("unknown charset");
 
-    // Warm up: force device init and module load before any timing.
-    pow_solver::gpu::bruteforce(b"warmup", &algo, 0, "leading", &charset);
-
-    println!("GPU benchmark: algo={algo} bits={bits} charset={charset_name} runs={runs}");
-    println!("Expected attempts per run: ~{:.0}", 2f64.powi(bits as i32));
+    println!("GPU throughput benchmark");
+    println!("  algo={algo}  charset={charset_name}  suffix_len={suffix_len}");
+    println!("  target duration: {target_secs:.0}s");
     println!();
 
-    // Simple xorshift64 for prefix generation — no extra deps needed.
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0xdeadbeefcafe1234);
-    let mut rng = seed | 1; // ensure non-zero
-    let mut xorshift = move || {
-        rng ^= rng << 13;
-        rng ^= rng >> 7;
-        rng ^= rng << 17;
-        rng
-    };
+    // Warmup: triggers lazy GPU init (PTX load + function handle setup) and
+    // lets the driver reach steady-state clocks before we start timing.
+    // warmup=true fires one extra launch internally before the timed section.
+    print!("  Warming up... ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+    let (_, warmup_time) = pow_solver::gpu::bench_throughput(
+        &algo, &charset, suffix_len, 3, true,
+    ).expect("GPU unavailable — check LD_LIBRARY_PATH on WSL2");
+    println!("done ({:.2}s)", warmup_time.as_secs_f64());
 
-    let mut times = Vec::with_capacity(runs);
-
-    for i in 0..runs {
-        // 16-byte random prefix
-        let prefix: Vec<u8> = (0..2).flat_map(|_| xorshift().to_le_bytes()).collect();
-
-        let t0 = std::time::Instant::now();
-        let result = pow_solver::gpu::bruteforce(&prefix, &algo, bits, "leading", &charset);
-        let elapsed = t0.elapsed().as_secs_f64();
-
-        match result {
-            Some(suf) => {
-                // Verify correctness
-                let full: Vec<u8> = prefix.iter().chain(suf.iter()).copied().collect();
-                let hash = if algo == "sha1" {
-                    use sha1::Digest;
-                    sha1::Sha1::digest(&full).to_vec()
-                } else {
-                    use sha2::Digest;
-                    sha2::Sha256::digest(&full).to_vec()
-                };
-                let zeros = pow_solver::hash_pow::count_leading_zero_bits(&hash);
-                let mhs = 2f64.powi(bits as i32) / elapsed / 1e6;
-                println!("  run {:>2}: {:.3}s  ~{:.0} MH/s  [verified: {} bits]",
-                    i + 1, elapsed, mhs, zeros);
-                times.push(elapsed);
-            }
-            None => {
-                eprintln!("  run {:>2}: GPU unavailable or no solution", i + 1);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    let mean = times.iter().sum::<f64>() / times.len() as f64;
-    let min  = times.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max  = times.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let mean_mhs = 2f64.powi(bits as i32) / mean / 1e6;
-
+    // Calibration: 5 launches to estimate per-launch time, then scale to
+    // hit the target duration.
+    let (cal_hashes, cal_time) = pow_solver::gpu::bench_throughput(
+        &algo, &charset, suffix_len, 5, false,
+    ).expect("GPU unavailable");
+    let secs_per_launch = cal_time.as_secs_f64() / 5.0;
+    let n_launches = ((target_secs / secs_per_launch) as u32).max(10);
+    let cal_ghs = cal_hashes as f64 / cal_time.as_secs_f64() / 1e9;
+    println!("  Calibration: {cal_ghs:.3} GH/s → running {n_launches} launches (~{target_secs:.0}s)");
     println!();
-    println!("  mean: {:.3}s   min: {:.3}s   max: {:.3}s", mean, min, max);
-    println!("  avg est. rate: {:.0} MH/s  ({:.3} GH/s)", mean_mhs, mean_mhs / 1000.0);
-    println!("  (rates are estimated from expected 2^bits attempts; actual attempts are random)");
+
+    // Timed run.
+    let (total_hashes, elapsed) = pow_solver::gpu::bench_throughput(
+        &algo, &charset, suffix_len, n_launches, false,
+    ).expect("GPU unavailable");
+
+    let elapsed_s = elapsed.as_secs_f64();
+    let ghs       = total_hashes as f64 / elapsed_s / 1e9;
+    let mhs       = ghs * 1000.0;
+
+    println!("  Results");
+    println!("  -------");
+    println!("  launches : {n_launches}");
+    println!("  hashes   : {:.3}B", total_hashes as f64 / 1e9);
+    println!("  time     : {elapsed_s:.3}s");
+    println!("  rate     : {ghs:.3} GH/s  ({mhs:.0} MH/s)");
 }
 
 #[cfg(not(feature = "cuda"))]

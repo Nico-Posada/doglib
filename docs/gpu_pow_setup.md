@@ -1,85 +1,71 @@
-# GPU Proof-of-Work Solver — Build Setup
+# gpu pow
 
-The GPU backend compiles SHA-256 and SHA-1 CUDA kernels to PTX at `cargo build` time and embeds them in the extension module. At runtime there is zero JIT penalty — the PTX is loaded directly into the driver.
+this library contains some efficient SHA256/SHA1 code in CUDA to help solve hash-based proof of work systems  
+in my tests it's very close to hashcat speeds (`hashcat -b -m [1420/120]`)  
+it also works on wsl2!
 
-## Prerequisites
+## prereqs
+to install this you'll need:
+- a nvidia gpu. sorry but it's the only thing supported on wsl and even on non-wsl it's not easy
+- nvidia drivers. if you're on WSL all you need are the windows drivers installed ([source](https://docs.nvidia.com/cuda/wsl-user-guide/index.html#nvidia-compute-software-support-on-wsl-2))
+- nvidia's cuda toolkit. download [here](https://developer.nvidia.com/cuda-downloads)
+- rust and maturin (`pip install maturin` or `apt install python3-maturin`)
 
-| Requirement | Notes |
-|---|---|
-| NVIDIA GPU (Ampere / Ada or newer recommended) | Must be present at build time (nvcc `-arch=native`) |
-| CUDA Toolkit ≥ 12 | Provides `nvcc`; [download](https://developer.nvidia.com/cuda-downloads) |
-| NVIDIA driver ≥ 525 | Shipped with the OS or downloaded from NVIDIA |
-| Rust toolchain (stable) | `rustup update stable` |
-| `maturin` | `pip install maturin` |
-
-Verify nvcc is on PATH:
-```sh
-nvcc --version
-```
-
-## Build
-
-From the repository root:
+## building
+you can build and install the library with:
 ```sh
 cd src/doglib_rs
-maturin develop --features cuda
+maturin build --release --features cuda # it will spit out 'built wheel to <BLAH>'
+pip install /path/to/built/wheel/file.whl
 ```
 
-This will:
-1. Run `build.rs`, which invokes `nvcc -ptx -O3 -arch=native --use_fast_math` on each `.cu` kernel.
-2. Compile the Rust crate with cudarc and embed the PTX binaries.
-3. Install the Python extension into the current virtualenv.
-
-For a release build (recommended for benchmarking):
+### warning: small wsl2 bug
+if you get a warning about `nvcc` being unable to find your drivers,  
 ```sh
-maturin develop --release --features cuda
+export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
 ```
+should hopefully fix your problems.
 
-## Verify
+## testing
+everything should be set up! if you want to test your speeds, you can run
+```sh
+cargo run --release --features cuda --example gpu_bench
+```
+which should report your expected hashrate. if you wanna test sha256 set `GPU_BENCH_ALGO=sha256`.
 
+## using
+now you should hopefully be able to use this through `doglib_rs`:
 ```python
-import hashlib
-from doglib_rs import pow_solver
-
-# SHA-256, 20 leading zero bits
-suf = pow_solver.hash_bruteforce(b"TestPrefix", "sha256", 20, "leading", "printable")
-assert int.from_bytes(hashlib.sha256(b"TestPrefix" + suf).digest()[:3], "big") >> 4 == 0
-print("SHA-256 OK:", suf)
-
-# SHA-1 (hashcash style), 20 leading zero bits
-suf1 = pow_solver.hash_bruteforce(b"1:20:250101::salt:", "sha1", 20, "leading", "hex")
-assert int.from_bytes(hashlib.sha1(b"1:20:250101::salt:" + suf1).digest()[:3], "big") >> 4 == 0
-print("SHA-1 OK:", suf1)
+>>> from doglib_rs import pow_solver
+>>> # find X such that the first 32 bits of sha1(b'wooting'+X) are 0
+>>> pow_solver.hash_bruteforce(b"wooting", "sha1", 32, "leading", "numeric")
+b'570502797'
+>>>
+>>> from hashlib import sha1
+>>> sha1(b'wooting'+b'570502797').hexdigest()
+>>> '00000000495200a10f8d2baca4148da60bcdcb22'
+```
+and if you're using this for a well-known POW, say [socaz](https://hub.docker.com/r/cybersecnatlab/socaz), `do_pow` might be all you need:
+```bash
+corgo@dog-computer:~$ nc localhost 1089
+    Do Hashcash for 30 bits with resource "udtAjLfhDpIu"
+    https://pow.cybersecnatlab.it/?data=udtAjLfhDpIu&bits=30
+    or
+    hashcash -mCb30 "udtAjLfhDpIu"
+    Result: ^C
+corgo@dog-computer:~$ echo ERMMMMMM
+    ERMMMMMM
+corgo@dog-computer:~$ python3
+    Python 3.12.3 (main, Mar  3 2026, 12:15:18) [GCC 13.3.0] on linux
+    Type "help", "copyright", "credits" or "license" for more information.
+    >>> from dog import *
+    >>> p = do_pow(remote("localhost",1089))
+    >>> p.interactive()
+    [*] Switching to interactive mode
+    Write your code > hehehehe
 ```
 
-## Fallback behaviour
-
-If the `cuda` feature is not enabled (default), the crate is built without cudarc and GPU code is not compiled. `hash_bruteforce` falls back to the multi-threaded CPU implementation automatically — no code changes required.
-
-```sh
-# CPU-only build (default):
-maturin develop
-```
-
-## WSL2: `CUDA_ERROR_NO_DEVICE` at runtime
-
-On WSL2, Ubuntu ships a stub `libcuda.so` in `/usr/lib/x86_64-linux-gnu/` that always reports no devices. The real driver library lives in `/usr/lib/wsl/lib/`. Because the stub comes first in the standard library search path for unversioned `.so` lookups, cudarc loads the wrong one.
-
-Fix — add the WSL lib path to `LD_LIBRARY_PATH`:
-
-```sh
-echo 'export LD_LIBRARY_PATH=/usr/lib/wsl/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-```
-
-Verify it's fixed:
-```sh
-python3 -c "from doglib_rs import pow_solver; print(pow_solver.backend_info())"
-# should print: cuda
-```
-
-## Notes
-
-- `-arch=native` targets the GPU present at build time. To cross-compile for a specific architecture, replace with e.g. `-arch=sm_89` (Ada Lovelace).
-- The `.ptx` files are written to Cargo's `OUT_DIR` (inside `target/`) and are not committed to the repository.
-- `nvcc` must be on `PATH` when building with `--features cuda`; if it is not found, the build fails immediately with a clear error message.
+## notes
+since we are trying to go as fast as possible some very long prefixes (len(prefix)%64 >= 50) will not work with this kernel and you will be forced back to the CPU. you will be warned if this happens. if this is a problem you can try decreasing `MAX_SUFFIX_LEN` inside of `constants.rs`  
+if you know some common POWs that `do_pow` doesn't cover, make an issue/pr. some i am aware of
+- [0ctf](https://ctftime.org/writeup/29116): doable in hashcat, so probably won't add (at least for GPU)

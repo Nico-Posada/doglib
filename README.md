@@ -81,7 +81,7 @@ p = remote("whatever.pwn.local",11037)
 do_pow(p) # auto-detects POW format, solves it, and sends the answer
 # ... continue exploiting ...
 ```
-currently the fastest solver of kctf/redpwn-based POWs, and decent speeds for hash-based ones
+currently the fastest solver of kctf/redpwn-based POWs, and close to hashcat for hash-based ones
 
 ## muney
 [house of muney](https://maxwelldulin.com/BlogPost/House-of-Muney-Heap-Exploitation) payload generator
@@ -149,9 +149,9 @@ optional rust extensions to make certain doglib features MUCH faster. not instal
 uses [gimli](https://github.com/gimli-rs/gimli) to parse debug info 20x faster  
 note that this only matters on the first parse, afterwards we cache it  
 ### pow_solver
-two proof-of-work solvers in rust
+two very fast proof-of-work solvers in rust
 - sloth: fastest solver for [redpwn/kctf pow](https://github.com/redpwn/pow) i am aware of. 2nd place is [this](https://anemato.de/blog/kctf-vdf) which is ~10% slower
-- hash: pretty fast bruteforcer for "find hash with N leading zeros"-based POWs.
+- hash: fast bruteforcer for "find hash with N leading zeros"-based POWs, in my tests it's basically equivalent to hashcat. works on WSL too. requires some additional setup, see [gpu_pow_setup.md](docs/gpu_pow_setup.md)
 
 ## heap
 stuff relevant for heap exploitation. currently:

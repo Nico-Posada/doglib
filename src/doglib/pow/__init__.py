@@ -34,9 +34,9 @@ from doglib.pow._hash import (
 
 # ---- PoW detection patterns (each used for both detection and extraction) ---
 
-_RE_SOSETTE = re.compile(rb"SHA256\(([0-9A-Za-z]+)\s.*?(\d+)\s+bits")
-_RE_HXP = re.compile(rb'sha256\(unhex\("([0-9a-f]+)".*?(\d+)\s+zero')
-_RE_HASHCASH = re.compile(rb"hashcash\s+-mb(\d+)\s+(\S+)")
+_RE_SOSETTE = re.compile(rb"SHA256\(([a-zA-Z0-9]+)\s+.*?(\d+)\s+bits")
+_RE_HXP = re.compile(rb'sha256\(unhex\("([0-9a-f]+)".*?(\d+)\s+zero', re.IGNORECASE)
+_RE_HASHCASH = re.compile(rb'hashcash\s+-mCb(\d+)\s+"([^"]+)"')
 _RE_SLOTH = re.compile(rb"(s\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+)")
 
 

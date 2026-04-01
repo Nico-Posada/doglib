@@ -104,7 +104,7 @@ fn bruteforce_inner<H: Digest + Clone, const LEADING: bool>(
     // For length 1, the thread only tries its assigned slice of the charset.
     // For length > 1, the first byte is partitioned across threads; remaining
     // bytes sweep the full charset.
-    for suffix_len in 1..=8usize {
+    for suffix_len in 1..=crate::MAX_SUFFIX_LEN {
         // Odometer indices for the current suffix.
         let mut indices = vec![0usize; suffix_len];
         let mut suffix = vec![charset[0]; suffix_len];

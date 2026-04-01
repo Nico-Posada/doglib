@@ -1,3 +1,6 @@
+mod constants;
+pub use constants::MAX_SUFFIX_LEN;
+
 pub mod sloth;
 pub mod hash_pow;
 pub mod gpu;
@@ -29,9 +32,12 @@ fn hash_bruteforce(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
 
     let result = py.detach(|| {
-        // Try GPU first (no-op when `cuda` feature is not enabled)
+        // Try GPU first (no-op when `cuda` feature is not enabled).
+        // Skip GPU for very low difficulty: the minimum GPU work is one full
+        // kernel launch (~67M candidates, ~15ms).  Below ~23 bits the CPU
+        // finds the answer faster than the GPU's minimum per-call overhead.
         #[cfg(feature = "cuda")]
-        {
+        if bits >= gpu::GPU_MIN_BITS {
             let algo_str = algorithm;
             let pos_str  = position;
             if let Some(r) = gpu::bruteforce(prefix, algo_str, bits, pos_str, &cs) {

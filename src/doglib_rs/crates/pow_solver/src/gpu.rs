@@ -17,10 +17,13 @@ mod inner {
     const SHA1_PTX:   &str = include_str!(concat!(env!("OUT_DIR"), "/sha1_pow.ptx"));
 
     // ── launch geometry ───────────────────────────────────────────────────────
-    const THREADS: u32 = 256;
-    const BLOCKS:  u32 = 4096;
+    // THREADS=128: at ~34 registers/thread after STANDARD_IV saves 5 regs,
+    // Ada gives floor(65536 / (34×128)) = 15 blocks/SM → 1920 threads/SM → 93.75%
+    // occupancy vs 75% at THREADS=256.  BLOCKS doubled to keep CHUNK ≈ 67M.
+    const THREADS: u32 = 128;
+    const BLOCKS:  u32 = 8192;
     const BATCH:   u64 = 64;
-    const CHUNK:   u64 = (THREADS as u64) * (BLOCKS as u64) * BATCH; // 64M/launch
+    const CHUNK:   u64 = (THREADS as u64) * (BLOCKS as u64) * BATCH; // ~67M/launch
 
     // ── SHA IVs ───────────────────────────────────────────────────────────────
     const SHA256_IV: [u32; 8] = [
@@ -34,8 +37,10 @@ mod inner {
     // ── lazily-initialised GPU state ─────────────────────────────────────────
     struct GpuState {
         ctx:      std::sync::Arc<CudaContext>,
-        sha256_f: CudaFunction,
-        sha1_f:   CudaFunction,
+        sha256_s: [CudaFunction; crate::MAX_SUFFIX_LEN],
+        sha256_c: [CudaFunction; crate::MAX_SUFFIX_LEN],
+        sha1_s:   [CudaFunction; crate::MAX_SUFFIX_LEN],
+        sha1_c:   [CudaFunction; crate::MAX_SUFFIX_LEN],
     }
 
     static GPU: OnceLock<Option<GpuState>> = OnceLock::new();
@@ -55,15 +60,42 @@ mod inner {
     fn init_gpu() -> Result<GpuState, Box<dyn std::error::Error>> {
         let ctx = CudaContext::new(0)?;
 
-        // Load SHA-256 module
         let sha256_mod = ctx.load_module(Ptx::from_src(SHA256_PTX))?;
-        let sha256_f   = sha256_mod.load_function("sha256_pow")?;
+        let sha256_s: [CudaFunction; crate::MAX_SUFFIX_LEN] = (1..=crate::MAX_SUFFIX_LEN)
+            .map(|n| sha256_mod.load_function(&format!("sha256_pow_{n}_s")))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into().map_err(|_| -> Box<dyn std::error::Error> { "count mismatch".into() })?;
+        let sha256_c: [CudaFunction; crate::MAX_SUFFIX_LEN] = (1..=crate::MAX_SUFFIX_LEN)
+            .map(|n| sha256_mod.load_function(&format!("sha256_pow_{n}_c")))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into().map_err(|_| -> Box<dyn std::error::Error> { "count mismatch".into() })?;
 
-        // Load SHA-1 module
         let sha1_mod = ctx.load_module(Ptx::from_src(SHA1_PTX))?;
-        let sha1_f   = sha1_mod.load_function("sha1_pow")?;
+        let sha1_s: [CudaFunction; crate::MAX_SUFFIX_LEN] = (1..=crate::MAX_SUFFIX_LEN)
+            .map(|n| sha1_mod.load_function(&format!("sha1_pow_{n}_s")))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into().map_err(|_| -> Box<dyn std::error::Error> { "count mismatch".into() })?;
+        let sha1_c: [CudaFunction; crate::MAX_SUFFIX_LEN] = (1..=crate::MAX_SUFFIX_LEN)
+            .map(|n| sha1_mod.load_function(&format!("sha1_pow_{n}_c")))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into().map_err(|_| -> Box<dyn std::error::Error> { "count mismatch".into() })?;
 
-        Ok(GpuState { ctx, sha256_f, sha1_f })
+        Ok(GpuState { ctx, sha256_s, sha256_c, sha1_s, sha1_c })
+    }
+
+    // ── standard-IV detection helpers ────────────────────────────────────────
+    fn is_standard_sha1_iv(w: &[u32]) -> bool {
+        w.len() >= 5
+            && w[0] == SHA1_IV[0] && w[1] == SHA1_IV[1] && w[2] == SHA1_IV[2]
+            && w[3] == SHA1_IV[3] && w[4] == SHA1_IV[4]
+    }
+
+    fn is_standard_sha256_iv(w: &[u32]) -> bool {
+        w.len() >= 8
+            && w[0] == SHA256_IV[0] && w[1] == SHA256_IV[1]
+            && w[2] == SHA256_IV[2] && w[3] == SHA256_IV[3]
+            && w[4] == SHA256_IV[4] && w[5] == SHA256_IV[5]
+            && w[6] == SHA256_IV[6] && w[7] == SHA256_IV[7]
     }
 
     // ── SHA-256 CPU compression (for long-prefix mid-state) ──────────────────
@@ -192,6 +224,110 @@ mod inner {
         Some((words, rp_len))
     }
 
+    // ── throughput benchmark ──────────────────────────────────────────────────
+    /// Run `n_launches` kernel launches with an impossible difficulty (bits=255)
+    /// so every thread processes the full BATCH without ever finding a match.
+    /// Returns `(total_candidates_processed, elapsed)`.
+    ///
+    /// Throughput is deterministic — no search randomness — so a single short
+    /// run gives an accurate GH/s number.  The first call also triggers the
+    /// lazy GPU init (PTX load + function handle setup), so pass `warmup=true`
+    /// on the first call to exclude that one-time overhead from the timing.
+    pub fn bench_throughput(
+        algo:       &str,
+        charset:    &[u8],
+        suffix_len: usize,
+        n_launches: u32,
+        warmup:     bool,
+    ) -> Option<(u64, std::time::Duration)> {
+        let gpu = get_gpu()?;
+        let stream = gpu.ctx.default_stream();
+
+        let suffix_len = suffix_len.clamp(1, crate::MAX_SUFFIX_LEN);
+
+        // Short fixed prefix that guarantees standard IV and single-block fit.
+        let prefix = b"bench_pow_throughput";
+        let (init_words_vec, remaining_start) = match algo {
+            "sha256" => {
+                let (iw, rs) = build_init_state_sha256(prefix);
+                (iw.to_vec(), rs)
+            }
+            "sha1" => {
+                let (iw, rs) = build_init_state_sha1(prefix);
+                let mut v = iw.to_vec();
+                v.resize(8, 0);
+                (v, rs)
+            }
+            _ => return None,
+        };
+        let remaining_prefix = &prefix[remaining_start..];
+        let use_std_iv = match algo {
+            "sha256" => is_standard_sha256_iv(&init_words_vec),
+            "sha1"   => is_standard_sha1_iv(&init_words_vec),
+            _        => false,
+        };
+        let total_len = prefix.len() + suffix_len;
+        let (tmpl_words, suffix_byte_off) = make_template(remaining_prefix, suffix_len, total_len)?;
+
+        let cs_gpu:   CudaSlice<u8>  = stream.clone_htod(charset).ok()?;
+        let cs_len = charset.len() as i32;
+        let init_gpu: CudaSlice<u32> = stream.clone_htod(&init_words_vec).ok()?;
+        let tmpl_gpu: CudaSlice<u32> = stream.clone_htod(&tmpl_words).ok()?;
+        let mut found_gpu:  CudaSlice<u32> = stream.alloc_zeros(1).ok()?;
+        let mut result_gpu: CudaSlice<u64> = stream.alloc_zeros(1).ok()?;
+
+        let suf_off: i32 = suffix_byte_off as i32;
+        let bits_i:  i32 = 255; // impossible — kernel always runs the full BATCH
+        let leading: i32 = 1;
+        let base:    u64 = 0;
+        let cfg = LaunchConfig {
+            block_dim: (THREADS, 1, 1),
+            grid_dim:  (BLOCKS, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        // Inline closure to fire one launch (avoids repeating the arg list twice).
+        let launch_once = |found: &mut CudaSlice<u32>, result: &mut CudaSlice<u64>| {
+            unsafe {
+                match algo {
+                    "sha256" => {
+                        let fs = if use_std_iv { &gpu.sha256_s } else { &gpu.sha256_c };
+                        stream.launch_builder(&fs[suffix_len - 1])
+                            .arg(&base).arg(&init_gpu).arg(&tmpl_gpu)
+                            .arg(&cs_gpu).arg(&cs_len).arg(&suf_off)
+                            .arg(&bits_i).arg(&leading)
+                            .arg(found).arg(result)
+                            .launch(cfg).ok()
+                    }
+                    "sha1" => {
+                        let fs = if use_std_iv { &gpu.sha1_s } else { &gpu.sha1_c };
+                        stream.launch_builder(&fs[suffix_len - 1])
+                            .arg(&base).arg(&init_gpu).arg(&tmpl_gpu)
+                            .arg(&cs_gpu).arg(&cs_len).arg(&suf_off)
+                            .arg(&bits_i).arg(&leading)
+                            .arg(found).arg(result)
+                            .launch(cfg).ok()
+                    }
+                    _ => None,
+                }
+            }
+        };
+
+        if warmup {
+            launch_once(&mut found_gpu, &mut result_gpu)?;
+            stream.synchronize().ok()?;
+        }
+
+        let t0 = std::time::Instant::now();
+        for _ in 0..n_launches {
+            launch_once(&mut found_gpu, &mut result_gpu)?;
+        }
+        stream.synchronize().ok()?;
+        let elapsed = t0.elapsed();
+
+        Some((n_launches as u64 * CHUNK, elapsed))
+    }
+
     // ── decode counter → suffix bytes ─────────────────────────────────────────
     fn decode_counter(mut counter: u64, suffix_len: usize, charset: &[u8]) -> Vec<u8> {
         let cs = charset.len() as u64;
@@ -221,30 +357,51 @@ mod inner {
         let cs_gpu: CudaSlice<u8> = stream.clone_htod(charset).ok()?;
         let cs_len = charset.len() as i32;
 
-        // Select function and init-state builder
-        let (func, init_words_vec, remaining_start) = match algo {
+        // Build init state (CPU pre-compresses any full 64-byte prefix blocks)
+        let (init_words_vec, remaining_start) = match algo {
             "sha256" => {
                 let (iw, rs) = build_init_state_sha256(prefix);
-                (&gpu.sha256_f, iw.to_vec(), rs)
+                (iw.to_vec(), rs)
             }
             "sha1" => {
                 let (iw, rs) = build_init_state_sha1(prefix);
                 let mut v = iw.to_vec();
                 v.resize(8, 0); // pad to 8 words so upload is uniform
-                (&gpu.sha1_f, v, rs)
+                (v, rs)
             }
             _ => return None,
         };
         let remaining_prefix = &prefix[remaining_start..];
 
+        // Detect whether we can use the cheaper standard-IV kernel variant.
+        let use_std_iv = match algo {
+            "sha256" => is_standard_sha256_iv(&init_words_vec),
+            "sha1"   => is_standard_sha1_iv(&init_words_vec),
+            _        => false,
+        };
+
         let init_gpu: CudaSlice<u32> = stream.clone_htod(&init_words_vec).ok()?;
 
-        for suffix_len in 1usize..=8 {
+        for suffix_len in 1usize..=crate::MAX_SUFFIX_LEN {
             let total_len = prefix.len() + suffix_len;
             let tmpl_result = make_template(remaining_prefix, suffix_len, total_len);
             let (tmpl_words, suffix_byte_off) = match tmpl_result {
                 Some(t) => t,
-                None => continue,
+                None => {
+                    // remaining_prefix + suffix won't fit in 55 bytes — this
+                    // only happens when the prefix is very long (>54 bytes after
+                    // CPU mid-state compression of any leading full blocks).
+                    // Larger suffix lengths will also fail, so warn once and bail.
+                    if suffix_len == 1 {
+                        eprintln!(
+                            "[doglib.pow] WARNING: GPU falling back to CPU — prefix length % 64 \
+                             lands in 55–63 byte range ({} bytes tail after block compression), \
+                             leaving no room for suffix in the final SHA block",
+                            remaining_prefix.len()
+                        );
+                    }
+                    continue;
+                }
             };
 
             let tmpl_gpu: CudaSlice<u32> = stream.clone_htod(&tmpl_words).ok()?;
@@ -252,8 +409,7 @@ mod inner {
             let mut found_gpu: CudaSlice<u32> = stream.alloc_zeros(1).ok()?;
             let mut result_gpu: CudaSlice<u64> = stream.alloc_zeros(1).ok()?;
 
-            let suf_off = suffix_byte_off as i32;
-            let suf_len = suffix_len as i32;
+            let suf_off  = suffix_byte_off as i32;
 
             let total_candidates: u64 = (charset.len() as u64).pow(suffix_len as u32);
             let mut base: u64 = 0;
@@ -266,20 +422,43 @@ mod inner {
                 };
 
                 unsafe {
-                    stream.launch_builder(func)
-                        .arg(&base)
-                        .arg(&init_gpu)
-                        .arg(&tmpl_gpu)
-                        .arg(&cs_gpu)
-                        .arg(&cs_len)
-                        .arg(&suf_off)
-                        .arg(&suf_len)
-                        .arg(&bits_i)
-                        .arg(&leading)
-                        .arg(&mut found_gpu)
-                        .arg(&mut result_gpu)
-                        .launch(cfg)
-                        .ok()?;
+                    match algo {
+                        "sha256" => {
+                            // Select per-suffix-len + IV variant (no suf_len arg)
+                            let fs = if use_std_iv { &gpu.sha256_s } else { &gpu.sha256_c };
+                            stream.launch_builder(&fs[suffix_len - 1])
+                                .arg(&base)
+                                .arg(&init_gpu)
+                                .arg(&tmpl_gpu)
+                                .arg(&cs_gpu)
+                                .arg(&cs_len)
+                                .arg(&suf_off)
+                                .arg(&bits_i)
+                                .arg(&leading)
+                                .arg(&mut found_gpu)
+                                .arg(&mut result_gpu)
+                                .launch(cfg)
+                                .ok()?;
+                        }
+                        "sha1" => {
+                            // Select per-suffix-len + IV variant (no suf_len arg)
+                            let fs = if use_std_iv { &gpu.sha1_s } else { &gpu.sha1_c };
+                            stream.launch_builder(&fs[suffix_len - 1])
+                                .arg(&base)
+                                .arg(&init_gpu)
+                                .arg(&tmpl_gpu)
+                                .arg(&cs_gpu)
+                                .arg(&cs_len)
+                                .arg(&suf_off)
+                                .arg(&bits_i)
+                                .arg(&leading)
+                                .arg(&mut found_gpu)
+                                .arg(&mut result_gpu)
+                                .launch(cfg)
+                                .ok()?;
+                        }
+                        _ => return None,
+                    }
                 }
 
                 stream.synchronize().ok()?;
@@ -300,3 +479,12 @@ mod inner {
 
 #[cfg(feature = "cuda")]
 pub use inner::bruteforce;
+#[cfg(feature = "cuda")]
+pub use inner::bench_throughput;
+
+/// Minimum difficulty (bits) at which the GPU backend is faster than CPU.
+/// Below this threshold the one-time init cost (PTX load + function handles)
+/// plus the minimum per-launch overhead exceeds the expected CPU solve time.
+/// Measured crossover for single-PoW-per-process CTF use: ~25 bits.
+#[cfg(feature = "cuda")]
+pub const GPU_MIN_BITS: u32 = 25;

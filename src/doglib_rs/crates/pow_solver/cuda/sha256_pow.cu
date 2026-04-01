@@ -7,20 +7,20 @@
  *   - Odometer-based suffix generation: zero 64-bit division in the hot loop
  *   - Shared-memory found flag (s_found): intra-block early exit without globals
  *   - BATCH=64 inner loop: amortises global-flag check across 64 hashes/thread
+ *   - Template on SL (suffix length): fully unrolled loops, fixed-size register
+ *     arrays, no dead iterations or branch overhead per candidate
+ *   - Template word load hoisted outside BATCH loop: 16 global reads per thread
+ *   - Loop-invariant suffix-patch parameters (widx, shift, mask) precomputed
+ *     once outside the BATCH loop
+ *   - __ldg() for charset reads: texture-cache hint for non-coalesced access
+ *   - STANDARD_IV template parameter: when true, use compile-time SHA-256 IV
+ *     constants instead of loading init_state[] from global memory.  Eliminates
+ *     8 physical registers, raising SM occupancy ~62.5 % → ~78 % on Ada (sm_89).
  *   - #pragma unroll on all inner loops
  *
- * Kernel parameters (all passed as pointers — no __constant__ memory):
- *   base_counter     : first counter value for this launch
- *   init_state       : 8 x u32 big-endian SHA-256 initial state (IV or mid-state)
- *   tmpl             : 16 x u32 big-endian SHA block template (prefix + padding)
- *   charset          : raw charset bytes
- *   charset_len      : number of bytes in charset
- *   suffix_byte_off  : byte offset inside the 64-byte block where suffix starts
- *   suffix_len       : number of suffix bytes to brute-force
- *   bits             : required zero-bit count
- *   leading          : 1 = leading zeros, 0 = trailing zeros
- *   found            : OUT global flag (0 = not found, 1 = found)
- *   result           : OUT winning counter value
+ * 16 extern "C" kernels are generated:
+ *   sha256_pow_{1..8}_s  — standard IV (prefix < 56 bytes, the common CTF case)
+ *   sha256_pow_{1..8}_c  — custom IV   (CPU pre-compressed mid-state)
  */
 
 typedef unsigned int       u32;
@@ -90,6 +90,16 @@ __device__ __constant__ u32 K256[64] = {
     0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u,
 };
 
+/* ── SHA-256 IV ──────────────────────────────────────────────────────────── */
+#define SHA256_H0 0x6a09e667u
+#define SHA256_H1 0xbb67ae85u
+#define SHA256_H2 0x3c6ef372u
+#define SHA256_H3 0xa54ff53au
+#define SHA256_H4 0x510e527fu
+#define SHA256_H5 0x9b05688cu
+#define SHA256_H6 0x1f83d9abu
+#define SHA256_H7 0x5be0cd19u
+
 /* ── check helpers ───────────────────────────────────────────────────────── */
 static __device__ __forceinline__ int check_leading(u32 h0, u32 h1, int bits) {
     if (bits <= 0)  return 1;
@@ -101,8 +111,6 @@ static __device__ __forceinline__ int check_leading(u32 h0, u32 h1, int bits) {
 }
 
 static __device__ __forceinline__ int check_trailing(u32 h6, u32 h7, int bits) {
-    /* h7 is the last word of the digest (big-endian → lowest address = MSB of h7
-       is byte 28, LSB is byte 31 = last byte).                               */
     if (bits <= 0)  return 1;
     if (bits <= 32) return (h7 << (32 - bits)) == 0u;
     if (h7 != 0)    return 0;
@@ -111,15 +119,23 @@ static __device__ __forceinline__ int check_trailing(u32 h6, u32 h7, int bits) {
     return 0;
 }
 
-/* ── main kernel ─────────────────────────────────────────────────────────── */
-extern "C" __global__ void sha256_pow(
+/* ── template implementation ─────────────────────────────────────────────── */
+/*
+ * SL:          suffix length (compile-time constant).
+ * STANDARD_IV: when true the compiler folds iv0..iv7 into immediates and
+ *              reclaims 8 physical registers.
+ *
+ * Callers are the extern "C" wrappers sha256_pow_1_s .. sha256_pow_8_s
+ * (standard IV) and sha256_pow_1_c .. sha256_pow_8_c (custom / mid-state IV).
+ */
+template<int SL, bool STANDARD_IV>
+static __device__ __forceinline__ void sha256_pow_impl(
     u64            base_counter,
     const u32* __restrict__ init_state,
     const u32* __restrict__ tmpl,
     const u8*  __restrict__ charset,
     int  charset_len,
     int  suffix_byte_off,
-    int  suffix_len,
     int  bits,
     int  leading,
     u32* found,
@@ -132,60 +148,75 @@ extern "C" __global__ void sha256_pow(
     const int tid = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     u64 thread_start = base_counter + (u64)tid * BATCH;
 
-    /* Load init state into registers */
-    u32 iv0 = init_state[0], iv1 = init_state[1], iv2 = init_state[2], iv3 = init_state[3];
-    u32 iv4 = init_state[4], iv5 = init_state[5], iv6 = init_state[6], iv7 = init_state[7];
+    /* When STANDARD_IV is a compile-time true, the compiler folds these into
+       immediate constants and reclaims 8 physical registers.                 */
+    u32 iv0 = STANDARD_IV ? SHA256_H0 : init_state[0];
+    u32 iv1 = STANDARD_IV ? SHA256_H1 : init_state[1];
+    u32 iv2 = STANDARD_IV ? SHA256_H2 : init_state[2];
+    u32 iv3 = STANDARD_IV ? SHA256_H3 : init_state[3];
+    u32 iv4 = STANDARD_IV ? SHA256_H4 : init_state[4];
+    u32 iv5 = STANDARD_IV ? SHA256_H5 : init_state[5];
+    u32 iv6 = STANDARD_IV ? SHA256_H6 : init_state[6];
+    u32 iv7 = STANDARD_IV ? SHA256_H7 : init_state[7];
 
-    /* Initialise odometer from thread_start (suffix_len divisions, done ONCE) */
-    u8 idx[8];
+    /* ── Load template once into base registers (hoisted from BATCH loop) ── */
+    u32 b0  = tmpl[0],  b1  = tmpl[1],  b2  = tmpl[2],  b3  = tmpl[3],
+        b4  = tmpl[4],  b5  = tmpl[5],  b6  = tmpl[6],  b7  = tmpl[7],
+        b8  = tmpl[8],  b9  = tmpl[9],  b10 = tmpl[10], b11 = tmpl[11],
+        b12 = tmpl[12], b13 = tmpl[13], b14 = tmpl[14], b15 = tmpl[15];
+
+    /* ── Precompute suffix patch parameters once (loop-invariant) ── */
+    /* SL is a compile-time constant so these arrays have fixed size → registers */
+    int widx_[SL], shift_[SL];
+    u32 mask_[SL];
+    #pragma unroll
+    for (int i = 0; i < SL; i++) {
+        int pos   = suffix_byte_off + i;
+        widx_[i]  = pos >> 2;
+        shift_[i] = (3 - (pos & 3)) << 3;
+        mask_[i]  = ~(0xFFu << shift_[i]);
+    }
+
+    /* ── Initialise odometer (SL divisions total, outside hot loop) ── */
+    u8 idx[SL];
     {
         u64 tmp = thread_start;
         #pragma unroll
-        for (int i = 0; i < 8; i++) {
-            idx[i] = (i < suffix_len) ? (u8)(tmp % charset_len) : 0;
-            if (i < suffix_len) tmp /= charset_len;
+        for (int i = 0; i < SL; i++) {
+            idx[i] = (u8)(tmp % (u64)charset_len);
+            tmp /= (u64)charset_len;
         }
     }
 
     #pragma unroll 1
-    for (int b = 0; b < BATCH; b++) {
+    for (int b_iter = 0; b_iter < BATCH; b_iter++) {
         /* Early-exit via shared flag */
         if (s_found) return;
 
-        /* Build the 16-word message schedule from template */
-        u32 w0, w1, w2, w3, w4, w5, w6, w7,
-            w8, w9, w10, w11, w12, w13, w14, w15;
-        w0  = tmpl[0];  w1  = tmpl[1];  w2  = tmpl[2];  w3  = tmpl[3];
-        w4  = tmpl[4];  w5  = tmpl[5];  w6  = tmpl[6];  w7  = tmpl[7];
-        w8  = tmpl[8];  w9  = tmpl[9];  w10 = tmpl[10]; w11 = tmpl[11];
-        w12 = tmpl[12]; w13 = tmpl[13]; w14 = tmpl[14]; w15 = tmpl[15];
+        /* Copy base template into working registers */
+        u32 w0=b0,  w1=b1,  w2=b2,  w3=b3,  w4=b4,  w5=b5,  w6=b6,  w7=b7,
+            w8=b8,  w9=b9,  w10=b10,w11=b11,w12=b12,w13=b13,w14=b14,w15=b15;
 
-        /* Patch suffix bytes into the word array.
-           suffix byte i lives at block byte (suffix_byte_off + i).
-           In big-endian words: word index = pos/4, shift = (3 - pos%4)*8      */
+        /* Apply suffix patches using precomputed constants */
         #pragma unroll
-        for (int i = 0; i < 8; i++) {
-            if (i >= suffix_len) break;
-            int pos   = suffix_byte_off + i;
-            int widx  = pos >> 2;
-            int shift = (3 - (pos & 3)) << 3;
-            u32 byte  = (u32)charset[idx[i]];
-            /* clear that byte in the word, then OR in the new byte */
-            switch (widx) {
-                case  0: w0  = (w0  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  1: w1  = (w1  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  2: w2  = (w2  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  3: w3  = (w3  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  4: w4  = (w4  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  5: w5  = (w5  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  6: w6  = (w6  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  7: w7  = (w7  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  8: w8  = (w8  & ~(0xFFu << shift)) | (byte << shift); break;
-                case  9: w9  = (w9  & ~(0xFFu << shift)) | (byte << shift); break;
-                case 10: w10 = (w10 & ~(0xFFu << shift)) | (byte << shift); break;
-                case 11: w11 = (w11 & ~(0xFFu << shift)) | (byte << shift); break;
-                case 12: w12 = (w12 & ~(0xFFu << shift)) | (byte << shift); break;
-                case 13: w13 = (w13 & ~(0xFFu << shift)) | (byte << shift); break;
+        for (int i = 0; i < SL; i++) {
+            u32 byte = (u32)__ldg(&charset[idx[i]]);
+            u32 val  = byte << shift_[i];
+            switch (widx_[i]) {
+                case  0: w0  = (w0  & mask_[i]) | val; break;
+                case  1: w1  = (w1  & mask_[i]) | val; break;
+                case  2: w2  = (w2  & mask_[i]) | val; break;
+                case  3: w3  = (w3  & mask_[i]) | val; break;
+                case  4: w4  = (w4  & mask_[i]) | val; break;
+                case  5: w5  = (w5  & mask_[i]) | val; break;
+                case  6: w6  = (w6  & mask_[i]) | val; break;
+                case  7: w7  = (w7  & mask_[i]) | val; break;
+                case  8: w8  = (w8  & mask_[i]) | val; break;
+                case  9: w9  = (w9  & mask_[i]) | val; break;
+                case 10: w10 = (w10 & mask_[i]) | val; break;
+                case 11: w11 = (w11 & mask_[i]) | val; break;
+                case 12: w12 = (w12 & mask_[i]) | val; break;
+                case 13: w13 = (w13 & mask_[i]) | val; break;
             }
         }
 
@@ -308,10 +339,10 @@ extern "C" __global__ void sha256_pow(
 
         /* Finalise digest (add IV) */
         u32 d0 = iv0 + a;
-        u32 d1 = iv1 + b_;
 
         int match;
         if (leading) {
+            u32 d1 = iv1 + b_;
             match = check_leading(d0, d1, bits);
         } else {
             u32 d6 = iv6 + g;
@@ -322,17 +353,43 @@ extern "C" __global__ void sha256_pow(
         if (match) {
             s_found = 1;
             if (atomicCAS(found, 0u, 1u) == 0u)
-                *result = thread_start + (u64)b;
+                *result = thread_start + (u64)b_iter;
             return;
         }
 
-        /* Odometer carry-increment (zero divisions) */
+        /* Odometer carry-increment */
         #pragma unroll
-        for (int i = 0; i < 8; i++) {
-            if (i >= suffix_len) break;
+        for (int i = 0; i < SL; i++) {
             idx[i]++;
             if ((int)idx[i] < charset_len) break;
             idx[i] = 0;
         }
     }
 }
+
+/* ── extern "C" entry points, one per suffix length ─────────────────────── */
+/*
+ * Each wrapper bakes SL and STANDARD_IV into the template instantiation.
+ * Suffix "_s" = standard IV (prefix < 56 bytes — the common CTF case).
+ * Suffix "_c" = custom IV  (prefix needed CPU mid-state compression first).
+ * The Rust side selects sha256_pow_{1..8}_{s,c} based on suffix_len and IV.
+ */
+#define INST_BODY(n, si) \
+    u64            base_counter, \
+    const u32* __restrict__ init_state, \
+    const u32* __restrict__ tmpl, \
+    const u8*  __restrict__ charset, \
+    int  charset_len, \
+    int  suffix_byte_off, \
+    int  bits, \
+    int  leading, \
+    u32* found, \
+    u64* result) \
+{ sha256_pow_impl<n, si>(base_counter, init_state, tmpl, charset, charset_len, \
+                         suffix_byte_off, bits, leading, found, result); }
+
+#define INST_S(n) extern "C" __global__ void sha256_pow_##n##_s( INST_BODY(n, true)
+#define INST_C(n) extern "C" __global__ void sha256_pow_##n##_c( INST_BODY(n, false)
+#define INST(n) INST_S(n) INST_C(n)
+
+#include "pow_inst.h"
