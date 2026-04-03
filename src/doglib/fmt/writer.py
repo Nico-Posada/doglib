@@ -1,5 +1,4 @@
-# advanced format string utils
-# i know pwntools has some stuff but the code is wizard shit i don't get
+# very todo
 from pwnlib.util.packing import p8, p16, p32, p64
 
 def write_data(data, *args, **kwargs):
@@ -55,7 +54,6 @@ def single_arb_write(off_1, off_2, off_3, where, what, stack_leak):
     for i, chunk in enumerate(chunks(what,2)):
         shift = ((where&0xff) + (i+1)*2)
         yield write_many({off_3: chunk, off_2: p8(shift)})
-    
 
 # arb write without stack control
 # will return a list of format string payloads to run
@@ -69,3 +67,5 @@ def single_arb_write(off_1, off_2, off_3, where, what, stack_leak):
     # for x in range(3):
         # n = 
     # return 
+
+__all__ = ["single_arb_write"]

@@ -11,8 +11,11 @@ from doglib.log import *
 from doglib.dumpelf import *
 from doglib.extelf import *
 from doglib.packer import *
-import doglib._hijack
+from doglib.fmt import *
 import doglib.shellcode as shellcode
+
+import doglib._hijack
+
 
 # ctypes imports are explicit since they use gcc
 from doglib import extelf as _extelf

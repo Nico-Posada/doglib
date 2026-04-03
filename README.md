@@ -137,13 +137,27 @@ exe.gadget['pop rdi; ret'] # (&gadget_address)
 exe.binsh # (&binsh_address)
 ```
 
-## asm
-basic assembler/disassembler stuff because pwntools is ungodly slow  
-access like `kasm.amd64` / or `cdis.arm`
-
 ## io_file
 advanced file stream generator, useful for quick FSOP  
 stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/pwncli/utils/io_file.py) with a few personal additions at the bottom
+
+## fmt
+work-in-progress library for advanced format string attacks (ex. stackless arb writes)
+currently has an arbitrary read tool
+```python
+from dog import *
+exe = ELF("./blah.bin") # say this has a fmtstr vuln
+p = process([exe.path])
+
+x = FmtStrReader(6,badchars=b'\n') # payload shows up at index 6, we can't use b'\n'
+pl = bytes(x.payload(exe.address,8)) # i want to read a guranteed 8 bytes at 'addr'
+p.sendline(pl)
+print(x.parse(p.recv())) # b'\x7fELF\x02\x01\x01\x00'
+```
+
+## asm
+basic assembler/disassembler stuff because pwntools is ungodly slow  
+access like `kasm.amd64` / or `cdis.arm`
 
 ## doglib_rs
 optional rust extensions to make certain doglib features MUCH faster. not installed by default.
@@ -159,9 +173,6 @@ two very fast proof-of-work solvers in rust
 stuff relevant for heap exploitation. currently:
 - ptr mangling / demangling
 - fake tcache struct crafter
-
-## fmt
-work-in-progress library for advanced format string attacks (ex. stackless arb writes)
 
 ## ezrop
 not very useful module for rop chains
