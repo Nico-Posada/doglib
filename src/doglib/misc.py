@@ -213,11 +213,6 @@ def find_libc_leak(memory_dump, target_addr, aligned=False, is_32bit=False):
         
     return heuristic_matches[0][1]
 
-# stuff i commonly write in solve scripts (may move to own module in the future)
-
-def i2b(n: int):
-    return str(n).encode()
-
 def rerun(p):
     """
     solve script bruteforcer. add this to your solve script:
@@ -258,6 +253,5 @@ __all__ = [
     "setcontext32",
     "house_of_context",
     "find_libc_leak",
-    "i2b",
     "rerun",
 ]

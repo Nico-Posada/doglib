@@ -10,6 +10,7 @@ from doglib.pow import *
 from doglib.log import *
 from doglib.dumpelf import *
 from doglib.extelf import *
+from doglib.packer import *
 import doglib._hijack
 import doglib.shellcode as shellcode
 
