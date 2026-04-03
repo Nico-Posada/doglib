@@ -8,7 +8,7 @@ it also works on wsl2!
 to install this you'll need:
 - a nvidia gpu. sorry but it's the only thing supported on wsl and even on non-wsl it's not easy
 - nvidia drivers. if you're on WSL all you need are the windows drivers installed ([source](https://docs.nvidia.com/cuda/wsl-user-guide/index.html#nvidia-compute-software-support-on-wsl-2))
-- nvidia's cuda toolkit. download [here](https://developer.nvidia.com/cuda-downloads)
+- nvidia's cuda toolkit. download [here](https://developer.nvidia.com/cuda-downloads).
 - rust and maturin (`pip install maturin` or `apt install python3-maturin`)
 
 ## building
@@ -22,9 +22,13 @@ pip install /path/to/built/wheel/file.whl
 ### warning: small wsl2 bug
 if you get a warning about `nvcc` being unable to find your drivers,  
 ```sh
-export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
+# easy fix
+export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# permanent fix
+echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/wsl-cuda.conf
+sudo ldconfig
 ```
-should hopefully fix your problems.
+should hopefully fix your problems
 
 ## testing
 everything should be set up! if you want to test your speeds, you can run
