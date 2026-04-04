@@ -142,7 +142,7 @@ advanced file stream generator, useful for quick FSOP
 stolen from [pwncli](https://github.com/RoderickChan/pwncli/raw/refs/heads/main/pwncli/utils/io_file.py) with a few personal additions at the bottom
 
 ## fmt
-work-in-progress library for advanced format string attacks (ex. stackless arb writes)
+work-in-progress library for advanced format string attacks (ex. stackless arb writes)  
 currently has an arbitrary read tool
 ```python
 from dog import *
@@ -150,7 +150,7 @@ exe = ELF("./blah.bin") # say this has a fmtstr vuln
 p = process([exe.path])
 
 x = FmtStrReader(6,badchars=b'\n') # payload shows up at index 6, we can't use b'\n'
-pl = bytes(x.payload(exe.address,8)) # i want to read a guranteed 8 bytes at 'addr'
+pl = bytes(x.payload(exe.address,8)) # i want to read a guaranteed 8 bytes at 'addr'
 p.sendline(pl)
 print(x.parse(p.recv())) # b'\x7fELF\x02\x01\x01\x00'
 ```
