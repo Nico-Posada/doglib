@@ -21,6 +21,7 @@ Usage:
 # HAVE NOT TESTED BULK WRITES
 
 
+from collections import deque
 from pwnlib.context import context
 from pwnlib.log import getLogger
 from pwnlib.util.packing import pack as _pwn_pack
@@ -122,7 +123,7 @@ class FmtStrReader:
         self.start_sentinel = start_sentinel
         self.end_sentinel = end_sentinel
         self.warn = warn
-        self._pending = None
+        self._pending = deque()
 
     @property
     def _word_size(self):
@@ -176,7 +177,7 @@ class FmtStrReader:
                 end_sentinel=self.end_sentinel,
                 addr=addr,
             )
-            self._pending = leak
+            self._pending.append(leak)
             return leak
 
         # --- Build the format string prefix ---
@@ -264,9 +265,9 @@ class FmtStrReader:
             bytes: ``count`` bytes of leaked data. Unrecoverable bytes are \\x00.
         """
         if leak is None:
-            leak = self._pending
-        if leak is None:
-            raise ValueError("No pending leak. Call payload() first or pass a FmtStrLeak.")
+            if not self._pending:
+                raise ValueError("No pending leak. Call payload() first or pass a FmtStrLeak.")
+            leak = self._pending.popleft()
 
         count = leak.count
         skipped = leak.skipped
