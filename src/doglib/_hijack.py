@@ -65,6 +65,19 @@ def readint(self,base=0):
 def readlineint(self,base=0):
     return int(self.readline(),base)
 
+@patch(tube)
+def recvpointer(self):
+    self.readuntil(b"0x")
+    buf = b""
+    while True:
+        c = self.recv(1, timeout=0.3)
+        if c not in b"0123456789abcdefABCDEF":
+            if c:
+                self.unrecv(c)
+            break
+        buf += c
+    return int(buf, 16)
+
 # shorthands
 tube.sla = tube.sendlineafter
 tube.sl = tube.sendline
@@ -80,6 +93,7 @@ tube.rld = tube.readlinecolon
 tube.rud = tube.readuntildrop
 tube.ri = tube.readint
 tube.rli = tube.readlineint
+tube.rp = tube.recvpointer
 
 # ---- elf -------------------------------------------------------------
 @patch(ELF)
