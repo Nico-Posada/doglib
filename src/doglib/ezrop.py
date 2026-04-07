@@ -2,7 +2,14 @@ from pwnlib.rop import ROP
 from pwnlib.util.packing import p64
 
 
+# fast rop that should work given at least libc
+# the chain is strange because it has to guarantee stack alignment which isn't easy
 # todo: fix stack alignment by pivoting over to __pthread_keys or something
+# this gadget seems to exist in every libc: `0x11129a: mov qword [rsi+0x10], rax ; ret ;`   
+# so we can write 
+# we should also have a 'retspam' argument that pads the start of the chain with ret gadgets
+# so if you have a generic overflow but don't know where the return address exactly is you're still fine
+# kinda like a nop sled
 def quickrop(progs,ret=False,badchars=b""):
     r = ROP(progs,badchars=badchars)
     binsh = None

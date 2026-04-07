@@ -12,6 +12,7 @@ from doglib.dumpelf import *
 from doglib.extelf import *
 from doglib.packer import *
 from doglib.fmt import *
+from doglib.flagguesser import *
 import doglib.shellcode as shellcode
 
 import doglib._hijack
