@@ -170,7 +170,7 @@ two very fast proof-of-work solvers in rust
 - hash: fast bruteforcer for "find hash with N leading zeros"-based POWs, in my tests it's basically equivalent to hashcat. works on WSL too. requires some additional setup, see [gpu_pow_setup.md](docs/gpu_pow_setup.md). includes cpu fallback (although MUCH slower)
 
 ## flagguesser
-character-by-character brutes taking too long?
+character-by-character brutes taking too long?  
 have an ngram model trained on 10k+ real ctf flags help you out:
 ```python
 from dog import *

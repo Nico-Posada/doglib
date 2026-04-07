@@ -238,6 +238,9 @@ class _LazyGuesser:
 
     def guess(self, prefix: bytes, *, stats: bool = False):
         return self._load().guess(prefix, stats=stats)
+    
+    def __call__(self, prefix: bytes | str, *, stats: bool = False):
+        return self.guess(prefix, stats=stats)
 
     @property
     def model(self) -> NGramModel:
