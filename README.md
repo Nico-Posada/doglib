@@ -175,7 +175,7 @@ have a lightweight llm trained on 10k+ real ctf flags help you out:
 ```python
 from dog import *
 print(guesser.guess("ctf{th")[:5])
-# [b'_', b't', b'e', b'3', b'r']
+# [b'e', b'3', b'_', b'a', b'i']
 ```
 guessctf is dead
 
