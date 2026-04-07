@@ -171,13 +171,13 @@ two very fast proof-of-work solvers in rust
 
 ## flagguesser
 character-by-character brutes taking too long?
-have a lightweight llm trained on 10k+ real ctf flags help you out:
+have an ngram model trained on 10k+ real ctf flags help you out:
 ```python
 from dog import *
 print(guesser.guess("ctf{th")[:5])
 # [b'e', b'3', b'_', b'a', b'i']
 ```
-guessctf is dead
+guessctf is dead #notsorry
 
 ## heap
 stuff relevant for heap exploitation. currently:
