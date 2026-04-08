@@ -8,7 +8,7 @@ def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-fmt_map = {1: 'hh', 2: 'h', 4: '', 8: 'l'}
+fmt_map = {1: 'hh', 2: 'h', 4: '', 8: 'll'}
 len_map = {1: 1<<8, 2: 1<<16,  4: 1<<32, 8: 1<<64}
 
 def i2c(data, prevcnt=0):

