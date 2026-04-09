@@ -115,39 +115,43 @@ typedef struct malloc_chunk {
     void* bk_nextsize;
 } _ct_malloc_chunk;
  
-enum
-{
-  ef_free,	/* `ef_free' MUST be zero!  */
-  ef_us,
-  ef_on,
-  ef_at,
-  ef_cxa
-};
 
-struct exit_function
-  {
+struct exit_function {
     /* `flavour' should be of type of the `enum' above but since we need
        this element in an atomic operation we have to use `long int'.  */
     long int flavor;
-    union
-      {
-	void (*at) (void);
-	struct
-	  {
-	    void (*fn) (int status, void *arg);
-	    void *arg;
-	  } on;
-	struct
-	  {
-	    void (*fn) (void *arg, int status);
-	    void *arg;
-	    void *dso_handle;
-	  } cxa;
-      } func;
-  };
-struct exit_function_list
-  {
-    struct exit_function_list *next;
-    size_t idx;
-    struct exit_function fns[32];
-  };
+    union {
+		void (*at) (void);
+		struct {
+			void (*fn) (int status, void *arg);
+			void *arg;
+		} on;
+		struct {
+			void (*fn) (void *arg, int status);
+			void *arg;
+			void *dso_handle;
+		} cxa;
+    } func;
+};
+struct exit_function_list {
+	struct exit_function_list *next;
+	size_t idx;
+	struct exit_function fns[32];
+};
+
+// should be true for x86/x64
+typedef struct malloc_state {
+    int mutex;
+    int flags;
+    int have_fastchunks;
+    void *fastbinsY[10]; 
+    void *top;
+    void *last_remainder;
+    void *bins[254]; 
+    unsigned int binmap[4]; 
+    struct malloc_state *next;
+    struct malloc_state *next_free;
+    size_t attached_threads;
+    size_t system_mem;
+    size_t max_system_mem;
+} _ct_malloc_state;
