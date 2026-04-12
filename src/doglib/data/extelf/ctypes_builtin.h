@@ -155,3 +155,39 @@ typedef struct malloc_state {
     size_t system_mem;
     size_t max_system_mem;
 } _ct_malloc_state;
+
+
+// widedata
+
+
+struct _IO_codecvt {
+    void *__codecvt_destr;
+    void *__codecvt_do_out;
+    void *__codecvt_do_unshift;
+    void *__codecvt_do_in;
+    void *__codecvt_do_encoding;
+    void *__codecvt_do_always_noconv;
+    void *__codecvt_do_length;
+    void *__codecvt_do_max_length;
+    void *__cd_in;
+    void *__cd_out;
+};
+
+struct _IO_wide_data {
+    wchar_t *_IO_read_ptr;
+    wchar_t *_IO_read_end;
+    wchar_t *_IO_read_base;
+    wchar_t *_IO_write_base;
+    wchar_t *_IO_write_ptr;
+    wchar_t *_IO_write_end;
+    wchar_t *_IO_buf_base;
+    wchar_t *_IO_buf_end;
+    wchar_t *_IO_save_base;
+    wchar_t *_IO_backup_base;
+    wchar_t *_IO_save_end;
+    __mbstate_t _IO_state;
+    __mbstate_t _IO_last_state;
+    struct _IO_codecvt _codecvt;
+    wchar_t _shortbuf[1];
+    const struct _IO_jump_t *_wide_vtable;
+};
