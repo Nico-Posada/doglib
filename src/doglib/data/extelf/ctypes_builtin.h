@@ -158,6 +158,7 @@ typedef struct malloc_state {
 
 
 // wide_data
+// first we need to define everything for io_codecvt
 struct __gconv_step;
 struct __gconv_step_data;
 
@@ -215,6 +216,7 @@ struct _IO_codecvt {
     _IO_iconv_t __cd_out;
 };
 
+// now we can correctly define wide_data
 struct _IO_wide_data {
     wchar_t *_IO_read_ptr;
     wchar_t *_IO_read_end;
@@ -231,5 +233,5 @@ struct _IO_wide_data {
     __mbstate_t _IO_last_state;
     struct _IO_codecvt _codecvt;
     wchar_t _shortbuf[1];
-    const void *_wide_vtable;
+    const struct _IO_jump_t *_wide_vtable;
 };
