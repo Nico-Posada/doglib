@@ -513,6 +513,131 @@ class ExtendedELF(ELF):
         offset, _ = self._walk_field_path(die, tokens)
         return offset
 
+    def _walk_offset_to_paths(self, die, offset):
+        """
+        Recursively find which field of `die` lives at byte `offset`.
+        Returns a list of path strings (each starting with '.', '[', or '+').
+        Multiple entries only appear when traversing a union with overlapping
+        members. Bitfield members are skipped; pointers are treated as opaque
+        scalars (no dereferencing).
+        """
+        die = self._unwrap_type(die)
+        if die is None:
+            raise ValueError("Could not resolve type DIE")
+
+        size = self._get_byte_size(die)
+        if size <= 0:
+            raise ValueError(f"Cannot determine size of type {self._get_type_name(die)}")
+        if offset < 0 or offset >= size:
+            raise ValueError(
+                f"Offset {offset} is outside type {self._get_type_name(die)} (size {size})"
+            )
+
+        if die.tag == 'DW_TAG_array_type':
+            subranges = self._get_array_subranges(die)
+            elem_die = self._unwrap_type(self._get_die_from_attr(die, 'DW_AT_type'))
+            elem_size = self._get_byte_size(elem_die)
+            if elem_size <= 0 or not subranges:
+                return [f'+{offset}']
+
+            strides = [0] * len(subranges)
+            s = elem_size
+            for i in range(len(subranges) - 1, -1, -1):
+                strides[i] = s
+                s *= subranges[i]
+
+            indices = ''
+            rem = offset
+            for st in strides:
+                idx, rem = divmod(rem, st)
+                indices += f'[{idx}]'
+
+            sub_paths = self._walk_offset_to_paths(elem_die, rem)
+            return [indices + p for p in sub_paths]
+
+        if die.tag == 'DW_TAG_union_type':
+            results = []
+            for child in die.iter_children():
+                if child.tag != 'DW_TAG_member':
+                    continue
+                if ('DW_AT_bit_size' in child.attributes
+                        or 'DW_AT_data_bit_offset' in child.attributes):
+                    continue
+                mtype = self._get_die_from_attr(child, 'DW_AT_type')
+                if mtype is None:
+                    continue
+                msize = self._get_byte_size(mtype)
+                if msize <= 0 or offset >= msize:
+                    continue
+                try:
+                    sub = self._walk_offset_to_paths(mtype, offset)
+                except ValueError:
+                    continue
+                name_attr = child.attributes.get('DW_AT_name')
+                prefix = '.' + name_attr.value.decode('utf-8') if name_attr else ''
+                results.extend(prefix + p for p in sub)
+            return results if results else [f'+{offset}']
+
+        if die.tag in ('DW_TAG_structure_type', 'DW_TAG_class_type'):
+            for child in die.iter_children():
+                if child.tag == 'DW_TAG_inheritance':
+                    base = self._get_die_from_attr(child, 'DW_AT_type')
+                    if base is None:
+                        continue
+                    bo = self._parse_member_offset(child)
+                    bs = self._get_byte_size(base)
+                    if bs > 0 and bo <= offset < bo + bs:
+                        return self._walk_offset_to_paths(base, offset - bo)
+                    continue
+                if child.tag != 'DW_TAG_member':
+                    continue
+                if ('DW_AT_bit_size' in child.attributes
+                        or 'DW_AT_data_bit_offset' in child.attributes):
+                    continue
+                mtype = self._get_die_from_attr(child, 'DW_AT_type')
+                if mtype is None:
+                    continue
+                moff = self._parse_member_offset(child)
+                msize = self._get_byte_size(mtype)
+                if msize <= 0 or not (moff <= offset < moff + msize):
+                    continue
+                sub = self._walk_offset_to_paths(mtype, offset - moff)
+                name_attr = child.attributes.get('DW_AT_name')
+                prefix = '.' + name_attr.value.decode('utf-8') if name_attr else ''
+                return [prefix + p for p in sub]
+            return [f'+{offset}']
+
+        return [''] if offset == 0 else [f'+{offset}']
+
+    def field_at(self, type_name, offset):
+        """
+        Reverse of offsetof(): given a struct type and a byte offset, return
+        the field path that lives at that offset.
+
+        Walks nested structs, multi-dim arrays, unions, anonymous members,
+        and base classes. If the offset lands mid-field (e.g. byte 3 of an
+        int), the result is suffixed with '+N' where N is the byte offset
+        within that field. A bare '+N' is returned when the offset lands in
+        struct padding.
+
+        For unions where multiple members overlap the offset, returns a list
+        of all valid paths. Otherwise returns a single string.
+
+        Bitfields are skipped; pointers are treated as opaque scalars.
+
+        Example:
+            headers.field_at('FinalBoss', 28)     -> 'matrix[1][2]'
+            headers.field_at('Basic', 5)          -> 'b+1'
+            headers.field_at('UnionMadness', 12)
+                -> ['data.coords.y', 'data.raw[4]']
+        """
+        die = self._get_type_die(type_name)
+        paths = self._walk_offset_to_paths(die, offset)
+        cleaned = [p[1:] if p.startswith('.') else p for p in paths]
+        if len(cleaned) == 1:
+            return cleaned[0]
+        return cleaned
+
     def containerof(self, type_name, field_path, member_addr):
         """
         Calculate the base address of a struct given a pointer to one of its

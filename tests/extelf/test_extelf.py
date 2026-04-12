@@ -224,6 +224,106 @@ def test_containerof_va_wrapping(headers):
     assert result == (0x4 - headers.offsetof('Basic', 'b')) & mask
 
 
+def test_field_at_basic_fields(headers):
+    assert headers.field_at('Basic', 0) == 'a'
+    assert headers.field_at('Basic', 4) == 'b'
+    assert headers.field_at('Basic', 8) == 'c'
+
+
+def test_field_at_mid_field(headers):
+    assert headers.field_at('Basic', 5) == 'b+1'
+    assert headers.field_at('Basic', 7) == 'b+3'
+    assert headers.field_at('Basic', 9) == 'c+1'
+
+
+def test_field_at_struct_padding_hole(headers):
+    # Basic has a 3-byte padding hole between 'a' (offset 0..1) and 'b' (offset 4)
+    assert headers.field_at('Basic', 1) == '+1'
+    # ArrayFun has padding between int[5] (ends at 20) and char* ptr (at 24)
+    assert headers.field_at('ArrayFun', 22) == '+22'
+
+
+def test_field_at_array_indexing(headers):
+    assert headers.field_at('ArrayFun', 0) == 'arr[0]'
+    assert headers.field_at('ArrayFun', 4) == 'arr[1]'
+    assert headers.field_at('ArrayFun', 16) == 'arr[4]'
+    assert headers.field_at('ArrayFun', 19) == 'arr[4]+3'
+    assert headers.field_at('ArrayFun', 24) == 'ptr'
+
+
+def test_field_at_multidim_array(headers):
+    assert headers.field_at('FinalBoss', 8) == 'matrix[0][0]'
+    assert headers.field_at('FinalBoss', 28) == 'matrix[1][2]'
+    assert headers.field_at('FinalBoss', 40) == 'current_hp'
+    assert headers.field_at('MultiDimTest', 0) == 'grid[0][0]'
+    assert headers.field_at('MultiDimTest', 28) == 'grid[1][3]'
+    assert headers.field_at('MultiDimTest', 48) == 'cube[0][0][0]'
+    assert headers.field_at('MultiDimTest', 62) == 'cube[1][0][2]'
+
+
+def test_field_at_nested_struct(headers):
+    assert headers.field_at('BossFight', 0) == 'b[0].a'
+    assert headers.field_at('BossFight', 16) == 'b[1].b'
+    # offset 28 is 4 bytes into u (which is UnionMadness), inside u.type (long)
+    assert headers.field_at('BossFight', 28) == 'u.type+4'
+
+
+def test_field_at_union(headers):
+    # UnionMadness.data starts at offset 8; the union has overlapping members
+    result = headers.field_at('UnionMadness', 8)
+    assert isinstance(result, list)
+    assert 'data.coords.x' in result
+    assert 'data.raw[0]' in result
+
+    result = headers.field_at('UnionMadness', 12)
+    assert isinstance(result, list)
+    assert 'data.coords.y' in result
+    assert 'data.raw[4]' in result
+
+
+def test_field_at_anonymous_members(headers):
+    # AnonMember has a top-level int 'type', then an anonymous union, then an anonymous struct
+    assert headers.field_at('AnonMember', 0) == 'type'
+    result = headers.field_at('AnonMember', 4)
+    assert isinstance(result, list)
+    assert 'as_int' in result
+    assert 'as_float' in result
+    # the anonymous struct's named members are reachable directly
+    assert headers.field_at('AnonMember', 8) == 'x'
+    assert headers.field_at('AnonMember', 10) == 'y'
+
+
+def test_field_at_out_of_bounds(headers):
+    with pytest.raises(ValueError):
+        headers.field_at('Basic', headers.sizeof('Basic'))
+    with pytest.raises(ValueError):
+        headers.field_at('Basic', 999)
+    with pytest.raises(ValueError):
+        headers.field_at('Basic', -1)
+
+
+def test_field_at_inverse_of_offsetof(headers):
+    """For each known (type, field), feed offsetof's result into field_at and
+    confirm at least one returned path round-trips back to the same offset."""
+    cases = [
+        ('Basic', 'a'), ('Basic', 'b'), ('Basic', 'c'),
+        ('ArrayFun', 'arr[0]'), ('ArrayFun', 'arr[3]'), ('ArrayFun', 'ptr'),
+        ('FinalBoss', 'current_state'), ('FinalBoss', 'matrix[0][0]'),
+        ('FinalBoss', 'matrix[1][2]'), ('FinalBoss', 'current_hp'),
+        ('MultiDimTest', 'grid[2][3]'), ('MultiDimTest', 'cube[1][0][2]'),
+        ('BossFight', 'b[0].a'), ('BossFight', 'b[1].c'),
+        ('UnionMadness', 'type'),
+    ]
+    for type_name, path in cases:
+        offset = headers.offsetof(type_name, path)
+        result = headers.field_at(type_name, offset)
+        results = [result] if isinstance(result, str) else result
+        # at least one returned path should map back to the same offset
+        assert any(headers.offsetof(type_name, r.split('+')[0]) == offset
+                   for r in results if not r.startswith('+')), \
+            f"field_at({type_name!r}, {offset}) = {result!r} did not round-trip {path!r}"
+
+
 def test_resolve_type(headers):
     assert headers.resolve_type('State') == 'enum State'
 
