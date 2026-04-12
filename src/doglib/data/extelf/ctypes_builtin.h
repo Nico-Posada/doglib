@@ -157,20 +157,62 @@ typedef struct malloc_state {
 } _ct_malloc_state;
 
 
-// widedata
+// wide_data
+struct __gconv_step;
+struct __gconv_step_data;
 
+typedef int   (*__gconv_fct)(struct __gconv_step *, struct __gconv_step_data *,
+                             const unsigned char **, const unsigned char *,
+                             unsigned char **, size_t *, int, int);
+typedef wint_t (*__gconv_btowc_fct)(struct __gconv_step *, unsigned char);
+typedef int   (*__gconv_init_fct)(struct __gconv_step *);
+typedef void  (*__gconv_end_fct)(struct __gconv_step *);
+
+struct __gconv_loaded_object {
+    const char *name;
+    int counter;
+    void *handle;
+    __gconv_fct      fct;
+    __gconv_init_fct init_fct;
+    __gconv_end_fct  end_fct;
+};
+
+struct __gconv_step {
+    struct __gconv_loaded_object *__shlib_handle;
+    const char *__modname;
+    int __counter;
+    char *__from_name;
+    char *__to_name;
+    __gconv_fct       __fct;
+    __gconv_btowc_fct __btowc_fct;
+    __gconv_init_fct  __init_fct;
+    __gconv_end_fct   __end_fct;
+    int __min_needed_from;
+    int __max_needed_from;
+    int __min_needed_to;
+    int __max_needed_to;
+    int __stateful;
+    void *__data;
+};
+
+struct __gconv_step_data {
+    unsigned char *__outbuf;
+    unsigned char *__outbufend;
+    int __flags;
+    int __invocation_counter;
+    int __internal_use;
+    __mbstate_t *__statep;
+    __mbstate_t  __state;
+};
+
+typedef struct {
+    struct __gconv_step      *step;
+    struct __gconv_step_data  step_data;
+} _IO_iconv_t;
 
 struct _IO_codecvt {
-    void *__codecvt_destr;
-    void *__codecvt_do_out;
-    void *__codecvt_do_unshift;
-    void *__codecvt_do_in;
-    void *__codecvt_do_encoding;
-    void *__codecvt_do_always_noconv;
-    void *__codecvt_do_length;
-    void *__codecvt_do_max_length;
-    void *__cd_in;
-    void *__cd_out;
+    _IO_iconv_t __cd_in;
+    _IO_iconv_t __cd_out;
 };
 
 struct _IO_wide_data {
@@ -189,5 +231,5 @@ struct _IO_wide_data {
     __mbstate_t _IO_last_state;
     struct _IO_codecvt _codecvt;
     wchar_t _shortbuf[1];
-    const struct _IO_jump_t *_wide_vtable;
+    const void *_wide_vtable;
 };
