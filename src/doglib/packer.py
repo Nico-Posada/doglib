@@ -16,6 +16,13 @@ def pa(n: int):
     return n.to_bytes(length, byteorder=_context.endian)
 
 
+# --- bitmasks ---
+
+def m8(n):  return n & 0xff
+def m16(n): return n & 0xffff
+def m32(n): return n & 0xffffffff
+def m64(n): return n & 0xffffffffffffffff
+
 # --- bitwise rotations ---
 
 def ror(n, r):
@@ -101,6 +108,7 @@ def u2s64(v):
 
 __all__ = [
     "b", "ua", "pa",
+    "m8", "m16", "m32", "m64",
     "ror", "rol",
     "f2b", "b2f", "d2b", "b2d",
     "f2i", "i2f", "d2i", "i2d",
