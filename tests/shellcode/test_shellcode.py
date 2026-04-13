@@ -1,6 +1,6 @@
 """Tests for doglib.shellcode — ShellcodeSet and the minshell set."""
 import pytest
-from doglib.shellcode import minshell, run, runcmd
+from doglib.shellcode import minshell, runcmd
 from doglib.shellcode._base import ShellcodeSet
 
 
@@ -88,32 +88,14 @@ class TestShellcodeSetExtensibility:
         assert repr(s).startswith("ShellcodeSet(")
 
 
-class TestRun:
-    def test_returns_bytes(self):
-        result = run("/bin/ls")
-        assert isinstance(result, bytes)
-        assert len(result) > 0
-
-    def test_default_argv_is_path(self):
-        assert run("/bin/ls") == run("/bin/ls", argv=["/bin/ls"])
-
-    def test_explicit_argv(self):
-        result = run("/bin/ls", argv=["/bin/ls", "-la"])
-        assert isinstance(result, bytes)
-        assert result != run("/bin/ls")
-
-    def test_different_from_runcmd(self):
-        assert run("/bin/ls") != runcmd("ls")
-
-
 class TestRuncmd:
     def test_returns_bytes(self):
         result = runcmd("ls")
         assert isinstance(result, bytes)
         assert len(result) > 0
 
-    def test_default_ctx_is_amd64(self):
-        assert runcmd("ls") == runcmd("ls", ctx="amd64")
+    def test_default_ctx_is_i386(self):
+        assert runcmd("ls") == runcmd("ls", ctx="i386")
 
     def test_arm_ctx(self):
         from pwnlib.exception import PwnlibException
