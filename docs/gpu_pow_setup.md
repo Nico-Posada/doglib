@@ -20,15 +20,24 @@ pip install /path/to/built/wheel/file.whl
 ```
 
 ### warning: small wsl2 bug
-if you get a warning about `nvcc` being unable to find your drivers,  
-```sh
-# easy fix
+if you get a warning about `nvcc` being unable to find your drivers, this is a wsl bug. you should either:
+```bash
 export LD_LIBRARY_PATH="/usr/lib/wsl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# permanent fix
-echo "/usr/lib/wsl/lib" | sudo tee /etc/ld.so.conf.d/wsl-cuda.conf
+```
+or
+```bash
+cd /usr/lib/wsl/lib
+# backup
+sudo mv libcuda.so.1 libcuda.so.1.backup
+sudo mv libcuda.so libcuda.so.backup
+# create symlink manually
+sudo ln -s libcuda.so.1.1 libcuda.so.1
+sudo ln -s libcuda.so.1 libcuda.so
+# update cache
 sudo ldconfig
 ```
-should hopefully fix your problems
+(as per [this](https://github.com/microsoft/WSL/issues/8587#issuecomment-1229170859))
+
 
 ## testing
 everything should be set up! if you want to test your speeds, you can run
@@ -36,6 +45,11 @@ everything should be set up! if you want to test your speeds, you can run
 cargo run --release --features cuda --example gpu_bench
 ```
 which should report your expected hashrate. if you wanna test sha256 set `GPU_BENCH_ALGO=sha256`.
+if you want to check if you're gpu accelerated, you can run the following:
+```python
+from doglib.pow._hash import _gpu_available
+print(_gpu_available())
+```
 
 ## using
 now you should hopefully be able to use this through `doglib_rs`:
