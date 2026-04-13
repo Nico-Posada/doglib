@@ -1,11 +1,109 @@
 # packing module that's also not named something that would collide with pwntools
-# probably not gonna be much here tbh
+import struct
+from pwnlib.context import context as _context
 from pwnlib.util.packing import u64
 
 def b(n: int|str):
     return str(n).encode()
 
 def ua(b: bytes):
-    u64(b.ljust(8, b"\0")[:8])
+    """unpack any: bytes to int, using context endianness"""
+    return int.from_bytes(b, byteorder=_context.endian)
 
-__all__ = ["b", "ua"]
+def pa(n: int):
+    """pack any: int to bytes (auto length), using context endianness"""
+    length = (n.bit_length() + 7) // 8 or 1
+    return n.to_bytes(length, byteorder=_context.endian)
+
+
+# --- bitwise rotations ---
+
+def ror(n, r):
+    return (2**64-1)&(n>>r|n<<(64-r))
+
+def rol(n, r):
+    return ror(n, 64-r)
+
+# --- float/double <-> bytes ---
+
+def f2b(f):
+    """float (or list of floats) to bytes (single precision)"""
+    if isinstance(f, (list, tuple)):
+        return struct.pack(f'<{len(f)}f', *f)
+    return struct.pack('<f', f)
+
+def b2f(b):
+    """bytes to float(s) (single precision). returns single float if 4 bytes, else list"""
+    n = len(b) // 4
+    result = struct.unpack(f'<{n}f', b[:n*4])
+    return result[0] if n == 1 else list(result)
+
+def d2b(d):
+    """double (or list of doubles) to bytes"""
+    if isinstance(d, (list, tuple)):
+        return struct.pack(f'<{len(d)}d', *d)
+    return struct.pack('<d', d)
+
+def b2d(b):
+    """bytes to double(s). returns single double if 8 bytes, else list"""
+    n = len(b) // 8
+    result = struct.unpack(f'<{n}d', b[:n*8])
+    return result[0] if n == 1 else list(result)
+
+# --- float/double <-> int (reinterpret cast) ---
+
+def f2i(f):
+    """float bits as uint32"""
+    return struct.unpack('<I', struct.pack('<f', f))[0]
+
+def i2f(i):
+    """uint32 bits as float"""
+    return struct.unpack('<f', struct.pack('<I', i & 0xffffffff))[0]
+
+def d2i(d):
+    """double bits as uint64"""
+    return struct.unpack('<Q', struct.pack('<d', d))[0]
+
+def i2d(i):
+    """uint64 bits as double"""
+    return struct.unpack('<d', struct.pack('<Q', i & 0xffffffffffffffff))[0]
+
+# --- endian swaps ---
+
+def swap16(v):
+    return struct.unpack('>H', struct.pack('<H', v & 0xffff))[0]
+
+def swap32(v):
+    return struct.unpack('>I', struct.pack('<I', v & 0xffffffff))[0]
+
+def swap64(v):
+    return struct.unpack('>Q', struct.pack('<Q', v & 0xffffffffffffffff))[0]
+
+# --- signed <-> unsigned ---
+
+def s2u32(v):
+    """signed 32-bit int to unsigned"""
+    return v & 0xffffffff
+
+def u2s32(v):
+    """unsigned 32-bit int to signed"""
+    v &= 0xffffffff
+    return v - 0x100000000 if v >= 0x80000000 else v
+
+def s2u64(v):
+    """signed 64-bit int to unsigned"""
+    return v & 0xffffffffffffffff
+
+def u2s64(v):
+    """unsigned 64-bit int to signed"""
+    v &= 0xffffffffffffffff
+    return v - 0x10000000000000000 if v >= 0x8000000000000000 else v
+
+__all__ = [
+    "b", "ua", "pa",
+    "ror", "rol",
+    "f2b", "b2f", "d2b", "b2d",
+    "f2i", "i2f", "d2i", "i2d",
+    "swap16", "swap32", "swap64",
+    "s2u32", "u2s32", "s2u64", "u2s64",
+]
