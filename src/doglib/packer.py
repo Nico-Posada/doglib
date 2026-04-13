@@ -1,7 +1,7 @@
 # packing module that's also not named something that would collide with pwntools
 import struct
 from pwnlib.context import context as _context
-from pwnlib.util.packing import u64
+from pwnlib.util.packing import p8, p16, p32, p64, u8, u16, u32, u64
 
 def b(n: int|str):
     return str(n).encode()
@@ -115,6 +115,18 @@ def u2s64(v):
     v &= 0xffffffffffffffff
     return v - 0x10000000000000000 if v >= 0x8000000000000000 else v
 
+# --- signed pack/unpack shorthands ---
+
+def sp8(n):  return p8(n,  signed=True)
+def sp16(n): return p16(n, signed=True)
+def sp32(n): return p32(n, signed=True)
+def sp64(n): return p64(n, signed=True)
+
+def su8(b):  return u8(b,  signed=True)
+def su16(b): return u16(b, signed=True)
+def su32(b): return u32(b, signed=True)
+def su64(b): return u64(b, signed=True)
+
 __all__ = [
     "b", "ua", "pa",
     "m8", "m12", "m16", "m32", "m64",
@@ -124,4 +136,6 @@ __all__ = [
     "f2i", "i2f", "d2i", "i2d",
     "swap16", "swap32", "swap64",
     "s2u32", "u2s32", "s2u64", "u2s64",
+    "sp8", "sp16", "sp32", "sp64",
+    "su8", "su16", "su32", "su64",
 ]
