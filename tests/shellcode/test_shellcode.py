@@ -94,8 +94,8 @@ class TestRuncmd:
         assert isinstance(result, bytes)
         assert len(result) > 0
 
-    def test_default_ctx_is_i386(self):
-        assert runcmd("ls") == runcmd("ls", ctx="i386")
+    def test_default_ctx_is_amd64(self):
+        assert runcmd("ls") == runcmd("ls", ctx="amd64")
 
     def test_arm_ctx(self):
         from pwnlib.exception import PwnlibException

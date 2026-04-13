@@ -1,5 +1,10 @@
 from pwn import *
 
+# use amd64 as default arch instead of i386
+from pwnlib.context import ContextType as _ContextType
+_ContextType.defaults['arch'] = 'amd64'
+_ContextType.defaults['bits'] = 64
+
 from doglib.misc import *
 from doglib.heap import *
 from doglib.io_file import *
