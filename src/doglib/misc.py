@@ -4,6 +4,7 @@ from pwnlib.context import context as _context
 from pwnlib.rop.srop import SigreturnFrame
 from pwnlib.util.packing import p64, p32, p16, flat
 from .io_file import IO_FILE_plus_struct
+from .packer import rol, ror
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -19,12 +20,6 @@ def proc_maps_parser(data):
         if file not in mappings:
             mappings[file] = int(addr.split("-")[0],16)
     return mappings
-
-def ror(n,r):
-    return (2**64-1)&(n>>r|n<<(64-r))
-
-def rol(n,r):
-    return ror(n,64-r)
 
 def mangle(ptr,key):
     return rol(ptr^key,0x11)
@@ -243,8 +238,6 @@ def rerun(p):
 
 __all__ = [
     "proc_maps_parser",
-    "ror",
-    "rol",
     "mangle",
     "demangle",
     "mangle_kpt",

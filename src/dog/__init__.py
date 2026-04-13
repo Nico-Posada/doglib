@@ -11,6 +11,7 @@ from doglib.log import *
 from doglib.dumpelf import *
 from doglib.extelf import *
 from doglib.packer import *
+from doglib.rand import *
 from doglib.fmt import *
 from doglib.flagguesser import *
 import doglib.shellcode as shellcode
