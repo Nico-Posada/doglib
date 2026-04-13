@@ -4,5 +4,6 @@ use pyo3::prelude::*;
 fn doglib_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     dwarf_parser::register(m)?;
     pow_solver::register(m)?;
+    rand_cracker::register(m)?;
     Ok(())
 }

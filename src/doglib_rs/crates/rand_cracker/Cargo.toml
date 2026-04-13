@@ -1,0 +1,8 @@
+[package]
+name = "rand_cracker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+rayon = "1.10"

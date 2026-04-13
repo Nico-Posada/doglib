@@ -17,6 +17,7 @@ cuda = ["pow_solver/cuda"]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 dwarf_parser = { path = "crates/dwarf_parser" }
 pow_solver = { path = "crates/pow_solver" }
+rand_cracker = { path = "crates/rand_cracker" }
 
 [profile.release]
 codegen-units = 1
