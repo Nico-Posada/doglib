@@ -435,8 +435,47 @@ class GlibcRandCrack:
         results.sort()
         return results
 
+# helper functions to correctly format truncated rand() outputs as bit constraints
+
+def rand_mod(value, n):
+    """Format a rand() % n observation as a bit constraint string.
+    For non-power-of-2 n, only bits from the 2-adic factor are pinned;
+    for purely odd n this returns all unknowns."""
+    a = (n & -n).bit_length() - 1
+    if a == 0:
+        return '?' * 31
+    return '?' * (31 - a) + bin(value & ((1 << a) - 1))[2:].zfill(a)
+
+def rand_rshift(value, k):
+    """Format a rand() >> k observation as a bit constraint string."""
+    return bin(value)[2:].zfill(31 - k) + '?' * k
+
+def rand_and(value, mask):
+    """Format a rand() & mask observation as a bit constraint string.
+    Only bits where mask=1 are known; AND-zeroed bits reveal nothing."""
+    s = ''
+    for bit in range(30, -1, -1):
+        if mask & (1 << bit):
+            s += '1' if value & (1 << bit) else '0'
+        else:
+            s += '?'
+    return s
+
+def rand_divide(value, n):
+    """Format a rand() // n observation as a bit constraint string."""
+    min_val = value * n
+    if min_val >= (1 << 31):
+        raise ValueError("value implies rand() output >= 2^31")
+    max_val = min(min_val + n - 1, (1 << 31) - 1)
+    unknown_bits = (min_val ^ max_val).bit_length()
+    if unknown_bits >= 31:
+        return '?' * 31
+    known = 31 - unknown_bits
+    return bin(min_val >> unknown_bits)[2:].zfill(known) + '?' * unknown_bits
+
 __all__ = [
     "GlibcRand",
     "srand", "rand",
     "GlibcRandCrack",
+    "rand_mod", "rand_rshift", "rand_and", "rand_divide",
 ]
