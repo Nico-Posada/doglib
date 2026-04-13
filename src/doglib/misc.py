@@ -4,7 +4,7 @@ from pwnlib.context import context as _context
 from pwnlib.rop.srop import SigreturnFrame
 from pwnlib.util.packing import p64, p32, p16, flat
 from .io_file import IO_FILE_plus_struct
-from .packer import rol, ror
+from pwnlib.util.fiddling import rol as _rol, ror as _ror
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -22,10 +22,10 @@ def proc_maps_parser(data):
     return mappings
 
 def mangle(ptr,key):
-    return rol(ptr^key,0x11)
+    return _rol(ptr^key, 0x11)
 
 def demangle(ptr,key):
-    return ror(ptr,0x11)^key
+    return _ror(ptr, 0x11)^key
 
 def mangle_kpt(enc,known):
     return demangle(enc,known)

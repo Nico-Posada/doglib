@@ -30,16 +30,6 @@ def s16(n): n &= 0xffff;                return (n >> 8,  n & 0xff)
 def s32(n): n &= 0xffffffff;            return (n >> 16, n & 0xffff)
 def s64(n): n &= 0xffffffffffffffff;    return (n >> 32, n & 0xffffffff)
 
-# --- bitwise rotations ---
-
-# apparently pwntools already has this???
-# so i might remove idk
-def ror(n, r):
-    return (2**64-1)&(n>>r|n<<(64-r))
-
-def rol(n, r):
-    return ror(n, 64-r)
-
 # --- float/double <-> bytes ---
 
 def f2b(f):
@@ -131,7 +121,6 @@ __all__ = [
     "b", "ua", "pa",
     "m8", "m12", "m16", "m32", "m64",
     "s16", "s32", "s64",
-    "ror", "rol",
     "f2b", "b2f", "d2b", "b2d",
     "f2i", "i2f", "d2i", "i2d",
     "swap16", "swap32", "swap64",
