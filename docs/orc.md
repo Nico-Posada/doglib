@@ -1,4 +1,4 @@
-# ExtendedELF & CHeader
+# ORC
 
 DWARF-powered C struct toolkit for pwntools. Craft, parse, and inspect C structures using debug info or raw `.h` files.
 
@@ -7,11 +7,11 @@ DWARF-powered C struct toolkit for pwntools. Craft, parse, and inspect C structu
 ## Showcase
 
 ```python
-from doglib.extelf import ExtendedELF, CHeader, C64
+from doglib.orc import ORC, ORCHeader, C64
 
 
-libc = ExtendedELF('./libc.so.6') # load types from a binary with debug symbols..
-hdrs = CHeader('my_structs.h') # or compile a .h on the fly!
+libc = ORC('./libc.so.6') # load types from a binary with debug symbols..
+hdrs = ORCHeader('my_structs.h') # or compile a .h on the fly!
 C64 # don't have anything? this has some useful types ready
 
 # using any of these, you can...
@@ -62,29 +62,28 @@ struct FILE (216 bytes):
 ## Setup
 
 ```python
-from doglib.extelf import ExtendedELF, CHeader
+from doglib.orc import ORC, ORCHeader
 ```
 
 **From a binary with debug symbols:**
 
 ```python
-libc = ExtendedELF('./libc.so.6')
-libc.address = 0x7ffff7a00000  # PIE base slides are respected automatically
+libc = ORC('./libc.so.6')
 ```
 
 **From a C header file (compiled to DWARF on the fly):**
 
 ```python
-structs = CHeader("my_structs.h")
+structs = ORCHeader("my_structs.h")
 
 # With include paths for headers that #include other files
-structs = CHeader("my_structs.h", include_dirs=["./include"])
+structs = ORCHeader("my_structs.h", include_dirs=["./include"])
 
 # Force 32-bit struct layouts
-structs = CHeader("my_structs.h", bits=32)
+structs = ORCHeader("my_structs.h", bits=32)
 ```
 
-CHeader respects `context.bits` when the user has explicitly set `context.arch` or `context.bits`. Otherwise it defaults to the host architecture. An explicit `bits=` argument always takes priority.
+ORCHeader respects `context.bits` when the user has explicitly set `context.arch` or `context.bits`. Otherwise it defaults to the host architecture. An explicit `bits=` argument always takes priority.
 
 ---
 
@@ -372,18 +371,18 @@ structs.resolve_type('State')   # -> 'enum State'
 
 ## Address Math on Symbols
 
-For binaries with debug symbols, resolve C-style field paths to exact memory addresses. PIE base address slides are respected automatically.
+For binaries with debug symbols, `sym_obj` and `resolve_field` live on pwntools `ELF` (patched via `_hijack.py`). PIE base address slides are respected automatically.
 
 ```python
-libc = ExtendedELF('./libc.so.6')
+libc = ELF('./libc.so.6')
 libc.address = 0x7ffff7a00000
 
-# Attribute-style access
+# Attribute-style access (on pwntools ELF)
 addr = libc.sym_obj['main_arena']          # DWARFAddress for main_arena
 fd_addr = libc.sym_obj['main_arena'].bins[3].fd  # address of bins[3].fd
 
-# Cast arbitrary addresses
-chunk = libc.cast('malloc_chunk', 0x55555555b000)
+# Cast arbitrary addresses (on ORC)
+chunk = libc.orc.cast('malloc_chunk', 0x55555555b000)
 size_addr = chunk.size  # address of the size field
 
 # Cast as arrays using type string or count=
@@ -497,7 +496,7 @@ addr = libc.resolve_field('main_arena', 'bins[3].fd')
 
 ## Caching
 
-DWARF parsing results and compiled CHeader ELFs are cached to disk under `~/.cache/.pwntools-cache-*/extelf_cache/`. Caches are keyed by build ID (or content hash for binaries without one) and header content hash. Delete the cache directory to force a rebuild.
+DWARF parsing results and compiled ORCHeader ELFs are cached to disk under `~/.cache/.pwntools-cache-*/orc_cache/`. Caches are keyed by build ID (or content hash for binaries without one) and header content hash. Delete the cache directory to force a rebuild.
 
 ---
 
@@ -523,7 +522,7 @@ pip install --break-system-packages target/wheels/doglib_rs-*.whl
 
 Omit `--break-system-packages` if your global pip doesn't require it (e.g. inside a conda environment or an older system).
 
-The extension is automatically detected at import time. If not installed, extelf falls back to pyelftools transparently — no code changes needed.
+The extension is automatically detected at import time. If not installed, orc falls back to pyelftools transparently — no code changes needed.
 
 ---
 

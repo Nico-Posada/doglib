@@ -4,7 +4,6 @@ import json
 import hashlib
 import struct
 from pwnlib.log import getLogger
-from pwnlib.elf.elf import ELF
 from pwnlib.context import context
 from elftools.elf.elffile import ELFFile
 
@@ -21,52 +20,35 @@ from ._crafter import DWARFCrafter, DWARFArrayCrafter
 from ._enum import DWARFEnum
 from ._resolver import DWARFResolver
 
-class _CVarAccessor:
-    def __init__(self, elf):
-        self._elf = elf
 
-    def __getitem__(self, name):
-        self._elf._build_dwarf_cache()
-
-        base_addr = self._elf.symbols.get(name)
-        if base_addr is None:
-            raise KeyError(f"Symbol '{name}' not found in ELF symbol table.")
-
-        var_die_offset = self._elf._dwarf_vars.get(name)
-        if not var_die_offset:
-            raise KeyError(f"Variable '{name}' not found in DWARF info. Does it have debug symbols?")
-
-        dwarfinfo = self._elf._get_dwarfinfo()
-        var_die = dwarfinfo.get_DIE_from_refaddr(var_die_offset)
-        type_die = self._elf._get_die_from_attr(var_die, 'DW_AT_type')
-
-        if not type_die:
-            raise KeyError(f"Missing type info for variable '{name}'.")
-
-        return DWARFAddress(base_addr, self._elf, type_die.offset)
-
-    def __contains__(self, name):
-        self._elf._build_dwarf_cache()
-        return name in self._elf.symbols and name in self._elf._dwarf_vars
-
-
-class ExtendedELF(ELF):
+class ORC:
     """
-    An extension of the pwntools ELF class that adds support for resolving
-    complex C-struct offsets dynamically using DWARF debug information.
+    DWARF-powered C type toolkit. Parses debug information from ELF binaries
+    to provide struct crafting, parsing, casting, and type introspection.
     """
     _CACHE_VERSION = 5
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, path, bits=None):
+        self.path = os.path.abspath(path)
+        with open(self.path, 'rb') as f:
+            elffile = ELFFile(f)
+            self.little_endian = elffile.little_endian
+            self.bits = bits if bits is not None else elffile.elfclass
+            self.buildid = self._read_buildid(elffile)
         self._dwarf_vars = {}
         self._dwarf_types = {}
         self._dwarf_parsed = False
         self._dwarf_file = None
         self._dwarfinfo = None
-
-        self.sym_obj = _CVarAccessor(self)
         self._resolver = None
+
+    @staticmethod
+    def _read_buildid(elffile):
+        """Extract GNU build-id from an ELF file, or None."""
+        section = elffile.get_section_by_name('.note.gnu.build-id')
+        if section:
+            return section.data()[16:]
+        return None
 
     def _get_resolver(self):
         """Lazy-build the DWARF resolver. Requires dwarfinfo to be available."""
@@ -158,10 +140,10 @@ class ExtendedELF(ELF):
     def _parse_type_string(type_string):
         """
         Parse a type string into (base_name, dims, pointer_depth).
-          'Foo[2][3]' → ('Foo', (2, 3), 0)
-          'int *'     → ('int', None, 1)
-          'Foo **'    → ('Foo', None, 2)
-          'Foo'       → ('Foo', None, 0)
+          'Foo[2][3]' -> ('Foo', (2, 3), 0)
+          'int *'     -> ('int', None, 1)
+          'Foo **'    -> ('Foo', None, 2)
+          'Foo'       -> ('Foo', None, 0)
         """
         s = type_string.strip()
         pointer_depth = 0
@@ -240,16 +222,16 @@ class ExtendedELF(ELF):
         if self._dwarf_parsed:
             return
 
-        extelf_cache_dir = os.path.join(context.cache_dir, 'extelf_cache')
-        os.makedirs(extelf_cache_dir, exist_ok=True)
+        orc_cache_dir = os.path.join(context.cache_dir, 'orc_cache')
+        os.makedirs(orc_cache_dir, exist_ok=True)
 
-        if hasattr(self, 'buildid') and self.buildid:
+        if self.buildid:
             bid = self.buildid.hex()
         else:
             with open(self.path, 'rb') as f:
                 bid = hashlib.sha256(f.read()).hexdigest()[:16]
 
-        cache_file = os.path.join(extelf_cache_dir, f"dwarf_{bid}.json")
+        cache_file = os.path.join(orc_cache_dir, f"dwarf_{bid}.json")
 
         if os.path.exists(cache_file):
             try:
@@ -738,46 +720,3 @@ class ExtendedELF(ELF):
         die = self._get_type_die(type_name)
         unwrapped = self._unwrap_type(die)
         return self._get_type_name(unwrapped)
-
-    def resolve_field(self, symbol_name, field_path=None, struct_name=None):
-        """
-        Dynamically calculates the exact memory address of a field inside a struct/array.
-        Supports multi-dimensional array paths like 'matrix[1][2]'.
-        """
-        base_addr = self.symbols.get(symbol_name)
-        if base_addr is None:
-            log.error(f"Symbol '{symbol_name}' not found in standard ELF symbol table.")
-            return None
-
-        if not field_path:
-            return base_addr
-
-        self._build_dwarf_cache()
-        dwarfinfo = self._get_dwarfinfo()
-
-        if struct_name:
-            start_die_offset = self._resolve_type_name(struct_name)
-            if not start_die_offset:
-                log.error(f"Struct '{struct_name}' not found in DWARF info.")
-                return None
-        else:
-            var_die_offset = self._dwarf_vars.get(symbol_name)
-            if not var_die_offset:
-                log.error(f"Variable '{symbol_name}' not found in DWARF info. Try passing struct_name explicitly.")
-                return None
-            var_die = dwarfinfo.get_DIE_from_refaddr(var_die_offset)
-            type_die = self._get_die_from_attr(var_die, 'DW_AT_type')
-            if not type_die:
-                return None
-            start_die_offset = type_die.offset
-
-        start_die = dwarfinfo.get_DIE_from_refaddr(start_die_offset)
-        tokens = self._tokenize_path(field_path)
-
-        try:
-            offset, _ = self._walk_field_path(start_die, tokens)
-        except ValueError as e:
-            log.error(str(e))
-            return None
-
-        return (base_addr + offset) & va_mask(self.bits)

@@ -2,9 +2,14 @@
 # feel free to merge this (or the rest of this library i don't care)
 from pwnlib.tubes.tube import tube
 from pwnlib.elf.elf import ELF
+from pwnlib.log import getLogger
 from functools import cached_property
-from .extelf import ExtendedELF
+from .orc import ORC
+from .orc._sym import _CVarAccessor
+from .orc._constants import va_mask
 from .asm import kasm
+
+log = getLogger(__name__)
 
 def _get_func_name(func):
     if isinstance(func, property):
@@ -108,13 +113,8 @@ def binsh(self):
 
 @patch(ELF)
 @cached_property
-def extelf(self):
-    return ExtendedELF(self.path)
-
-@patch(ELF)
-@property
-def symo(self):
-    return self.extelf.sym_obj
+def orc(self):
+    return ORC(self.path)
 
 @patch(ELF)
 def onegadgets(self, level=100):
@@ -130,4 +130,64 @@ def onegadgets(self, level=100):
         offsets = [self.address + o for o in offsets]
     return offsets
 
-# maybe add more extelf stuff l8r
+
+# ---- orc on elf -------------------------------------------------------
+@patch(ELF)
+@cached_property
+def o(self):
+    return self.orc
+
+@patch(ELF)
+@cached_property
+def sym_obj(self):
+    return _CVarAccessor(self)
+
+@patch(ELF)
+@property
+def symo(self):
+    return self.sym_obj
+
+@patch(ELF)
+def resolve_field(self, symbol_name, field_path=None, struct_name=None):
+    """
+    Dynamically calculates the exact memory address of a field inside a struct/array.
+    Supports multi-dimensional array paths like 'matrix[1][2]'.
+    """
+    base_addr = self.symbols.get(symbol_name)
+    if base_addr is None:
+        log.error(f"Symbol '{symbol_name}' not found in standard ELF symbol table.")
+        return None
+
+    if not field_path:
+        return base_addr
+
+    orc = self.orc
+    orc._build_dwarf_cache()
+    dwarfinfo = orc._get_dwarfinfo()
+
+    if struct_name:
+        start_die_offset = orc._resolve_type_name(struct_name)
+        if not start_die_offset:
+            log.error(f"Struct '{struct_name}' not found in DWARF info.")
+            return None
+    else:
+        var_die_offset = orc._dwarf_vars.get(symbol_name)
+        if not var_die_offset:
+            log.error(f"Variable '{symbol_name}' not found in DWARF info. Try passing struct_name explicitly.")
+            return None
+        var_die = dwarfinfo.get_DIE_from_refaddr(var_die_offset)
+        type_die = orc._get_die_from_attr(var_die, 'DW_AT_type')
+        if not type_die:
+            return None
+        start_die_offset = type_die.offset
+
+    start_die = dwarfinfo.get_DIE_from_refaddr(start_die_offset)
+    tokens = orc._tokenize_path(field_path)
+
+    try:
+        offset, _ = orc._walk_field_path(start_die, tokens)
+    except ValueError as e:
+        log.error(str(e))
+        return None
+
+    return (base_addr + offset) & va_mask(orc.bits)

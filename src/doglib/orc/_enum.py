@@ -6,13 +6,13 @@ class DWARFEnum:
     Supports attribute access, 'in' checks, and iteration.
     NOTE: we shouldn't use IntEnum here because it merges duplicate values
     """
-    def __init__(self, elf, type_die_offset):
-        self._elf = elf
+    def __init__(self, orc, type_die_offset):
+        self._orc = orc
         self._type_die_offset = type_die_offset
         self._constants = {}
-        dwarfinfo = elf._get_dwarfinfo()
+        dwarfinfo = orc._get_dwarfinfo()
         die = dwarfinfo.get_DIE_from_refaddr(type_die_offset)
-        die = elf._unwrap_type(die)
+        die = orc._unwrap_type(die)
         if die and die.tag == 'DW_TAG_enumeration_type':
             for child in die.iter_children():
                 if child.tag == 'DW_TAG_enumerator':

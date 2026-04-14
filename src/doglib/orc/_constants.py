@@ -1,5 +1,5 @@
 """
-Centralised DWARF-related constants and small utilities for the extelf module.
+Centralised DWARF-related constants and small utilities for the orc module.
 """
 
 # Tags that are transparent wrappers (stripped by _unwrap_type)
@@ -42,7 +42,7 @@ def va_mask(bits):
     return (1 << bits) - 1
 
 
-def array_stride(elf, array_die, subrange_start=0):
+def array_stride(orc, array_die, subrange_start=0):
     """
     Compute stride and element type for indexing into a DWARF array type.
     Returns (stride, elem_type, remaining_len) where:
@@ -50,10 +50,10 @@ def array_stride(elf, array_die, subrange_start=0):
       - elem_type: unwrapped DIE of the element type
       - remaining_len: number of dimensions remaining (1 = scalar element)
     """
-    subranges = elf._get_array_subranges(array_die)
+    subranges = orc._get_array_subranges(array_die)
     remaining = subranges[subrange_start:]
-    elem_type = elf._unwrap_type(elf._get_die_from_attr(array_die, 'DW_AT_type'))
-    elem_size = elf._get_byte_size(elem_type)
+    elem_type = orc._unwrap_type(orc._get_die_from_attr(array_die, 'DW_AT_type'))
+    elem_size = orc._get_byte_size(elem_type)
     stride = elem_size
     for dim in remaining[1:]:
         stride *= dim

@@ -9,7 +9,7 @@ use std::sync::Arc;
 // gimli provides `RelocateReader<R, T>`, a Reader wrapper that transparently
 // applies ELF relocations when gimli reads addresses and offsets.  This is
 // the official API for handling ET_REL object files (like the .o files
-// produced by CHeader / CInline), where DW_FORM_strp values in .debug_info
+// produced by ORCHeader / ORCInline), where DW_FORM_strp values in .debug_info
 // are zero-filled placeholders whose real .debug_str offsets live as
 // relocation entries.
 //

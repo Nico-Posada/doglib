@@ -6,42 +6,45 @@ from dog import *
 ```
 
 
-## extelf
-very useful extension to pwntools `ELF`.  
+## orc
+very useful debuginfo parser for CTFs.  
 by parsing debuginfo, work with structs in python:
 ```python
 from dog import *
-libc = ExtendedELF('./libc.so.6')
-target_fd = libc.sym_obj['main_arena'].bins[3].fd # correct address of this field
+orc = ORC('./libc.so.6') # ELF has been patched to add this feature
 
 heap_chunk_addr = 0x55555555b000
-chunk_struct = libc.cast('malloc_chunk', heap_chunk_addr)
+chunk_struct = orc.cast('malloc_chunk', heap_chunk_addr)
 target_fd = chunk_struct.fd # correct address of this field
 
 # craft fake structs
-fake_tps = libc.craft('tcache_perthread_struct')
+fake_tps = orc.craft('tcache_perthread_struct')
 fake_tps.counts[15] = 1
 fake_tps.entries[15] = 0x123456
 bytes(fake_tps) # payload bytes
 
 # parse leaked structs
-parsed = libc.parse('tcache_perthread_struct', bytes(fake_tps))
+parsed = orc.parse('tcache_perthread_struct', bytes(fake_tps))
 parsed.entries[15] # 0x123456
 
 # or do all the above from a .h file!
-structs = CHeader("./my_header.h")
+structs = ORCHeader("./my_header.h")
 # or even inline it!
-structs = CInline("""
+structs = ORCInline("""
 struct foo {
     int a;
     int b;
 } foo;
 """)
+
+# pwntools ELF has also been patched to add this
+exe = ELF("./libc.so.6")
+exe.sym_obj['main_arena'].bins[42].fd # correct address of this field
 ```
-and much more! a bunch of basic types are already included in `extelf.C`, `.C32`, and `.C64`, so
+and much more! a bunch of basic types are already included in `orc.C`, `.C32`, and `.C64`, so
 you can quickly play around with it yourself:
 ```python
-from doglib.extelf import C64
+from dog import C64
 j = C64.craft("int[3][3]")
 j.fill(0x18) # now all indices are 0x18
 j[1][1] # 0x18
@@ -50,7 +53,7 @@ j[1][1] # 0x21
 j[2] = [3,4,5]
 bytes(j) # b'\x18\x00\x00\x00\x18\x00\x00\x00.....'
 ```
-little more at [docs/extelf.md](docs/extelf.md)
+little more at [docs/orc.md](docs/orc.md)
 
 
 ## dumpelf

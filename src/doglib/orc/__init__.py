@@ -1,15 +1,13 @@
 from ._address import DWARFAddress, DWARFArray
-from ._cheader import CHeader, CInline
+from ._cheader import ORCHeader, ORCInline
 from ._crafter import DWARFCrafter, DWARFArrayCrafter
 from ._enum import DWARFEnum
-from ._elf import ExtendedELF, _CVarAccessor
+from ._orc import ORC
 from ._builtin_types import CTypes
 
-ExtELF = ExtendedELF
-
 # Lazy singleton instances of CTypes for the three common bit widths.
-# Access as:  from doglib.extelf import C64
-# or:         import doglib.extelf; doglib.extelf.C64
+# Access as:  from doglib.orc import C64
+# or:         import doglib.orc; doglib.orc.C64
 _CTYPES_SINGLETONS = {}
 
 
@@ -28,4 +26,4 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
-__all__ = ["ExtendedELF", "ExtELF", "CHeader", "CInline"]
+__all__ = ["ORC", "ORCHeader", "ORCInline"]
