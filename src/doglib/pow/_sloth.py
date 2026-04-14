@@ -30,17 +30,24 @@ try:
 except ImportError:
     gmpy2 = None
 
-if _BACKEND == "python":
-    sys.stderr.write(
-        "[doglib.pow] running in pure-Python mode (~70x slower than optimal).\n"
-        "             pip install gmpy2          — ~8x faster\n"
-        "             cd src/doglib_rs; pip install .       — ~70x faster (requires AVX512)\n"
-    )
-elif _BACKEND == "gmpy2":
-    sys.stderr.write(
-        "[doglib.pow] running with gmpy2 (~8x slower than optimal).\n"
-        "             cd src/doglib_rs; pip install .       — ~8x faster (requires AVX512)\n"
-    )
+_backend_warned = False
+
+def _warn_backend():
+    global _backend_warned
+    if _backend_warned:
+        return
+    _backend_warned = True
+    if _BACKEND == "python":
+        sys.stderr.write(
+            "[doglib.pow] running in pure-Python mode (~70x slower than optimal).\n"
+            "             pip install gmpy2          — ~8x faster\n"
+            "             cd src/doglib_rs; pip install .       — ~70x faster (requires AVX512)\n"
+        )
+    elif _BACKEND == "gmpy2":
+        sys.stderr.write(
+            "[doglib.pow] running with gmpy2 (~8x slower than optimal).\n"
+            "             cd src/doglib_rs; pip install .       — ~8x faster (requires AVX512)\n"
+        )
 
 
 def _encode_number(num):
@@ -118,6 +125,7 @@ def solve_sloth(challenge):
     challenge = challenge.encode() if isinstance(challenge, str) else challenge
     if _rs_pow is not None:
         return _rs_pow.solve_sloth(challenge)
+    _warn_backend()
 
     diff, x = _decode_challenge(challenge)
     y = _sloth_root(x, diff, MODULUS)

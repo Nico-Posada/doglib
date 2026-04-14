@@ -1,5 +1,6 @@
 # intro
-As a walkthrough, I will be showing how to use DumpELF on a real CTF challenge. The one I'll pick is [printful](https://github.com/cscosu/buckeyectf-2025-public/blob/master/pwn/printful/README.md) a pwn challenge from BuckeyeCTF 2025 with a very simple description:
+As a walkthrough, I will be showing how to use DumpELF on a real CTF challenge.  
+The one I'll pick is [printful](https://github.com/cscosu/buckeyectf-2025-public/blob/master/pwn/printful/README.md), a pwn challenge from BuckeyeCTF 2025 with a very simple description:
 ```
 # printful
 
@@ -31,7 +32,7 @@ def do(payload):
     p.sendline(payload)
     return p.recv().removesuffix(b"> ")
 ```
-next, another function that uses this to make a function that reads the bytes a an address `addr` using the format string bug:
+next, we use this to write a function that reads the bytes at `addr` using the format string bug:
 ```python
 def dump_string(addr):
     if b"\n" in p64(addr):
